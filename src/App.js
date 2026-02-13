@@ -23,7 +23,7 @@ import {
 // =================================================================
 
 let app, auth, db;
-// FIX: Sanitizing appId to prevent Firebase segment count errors
+// FIX: Bereinigung der appId, um Firebase-Pfadfehler (odd number of segments) zu verhindern
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
 const appId = rawAppId.replace(/\//g, '_');
 
@@ -42,7 +42,7 @@ try {
 
 const PREVIEW_API_KEY = ""; 
 const ADMIN_PIN = "1704"; 
-const PROXY_URL = "/api/gemini"; // Vercel Backend
+const PROXY_URL = "/api/gemini"; // Dein Vercel Backend
 
 // =================================================================
 // DATEN
@@ -203,7 +203,6 @@ export default function App() {
   };
 
   const callAI = async (payload) => {
-    // Check if in preview environment
     if (PREVIEW_API_KEY && window.location.hostname.includes('googleusercontent')) {
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${PREVIEW_API_KEY}`,
@@ -218,14 +217,14 @@ export default function App() {
         return data;
     }
 
-    // ONLINE MODE: Request structure matches api/gemini.js handler from screenshot image_b20884.png
+    // ONLINE MODE: Request structure matches your api/gemini.js handler
     try {
         const response = await fetch('/api/gemini', {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
               model: "gemini-2.5-flash-preview-09-2025", 
-              payload: payload // Backend extracts model and payload
+              payload: payload 
             })
         });
         
@@ -386,7 +385,7 @@ export default function App() {
     finally { setIsGeneratingStrategy(false); }
   };
 
-  // --- UI RENDER ---
+  // --- RENDER ---
   
   if (appMode === 'select') {
     return (
@@ -456,7 +455,7 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
             <div className="lg:col-span-5"><div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl"><h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5"/> Leitfragen</h3><div className="space-y-6">{INTERVIEW_QUESTIONS.map(q=><div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>)}</div></div></div>
             <div className="lg:col-span-7 space-y-8">
-              <div className="bg-white/40 border border-white/60 rounded-[3rem] p-8 shadow-xl space-y-4">
+              <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-4">
                 <div className="grid grid-cols-2 gap-4"><input type="text" value={clientName} onChange={e=>setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium"/><input type="text" value={clientCompany} onChange={e=>setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium"/></div>
                 <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40 ml-2">Teamgröße</label><div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s=><button key={s} onClick={()=>setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50'}`}>{s}</button>)}</div></div>
                 <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40 ml-2">Bereich</label><div className="grid grid-cols-2 gap-2">
@@ -467,10 +466,10 @@ export default function App() {
               </div>
               <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
                 <div className="p-8 border-b border-white/40 flex justify-center gap-6">
-                  {!isRecording ? <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all"><Mic className="w-6 h-6"/> Aufnahme starten</button> : <div className="flex flex-col items-center gap-4"><div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338]" style={{width:`${Math.min(100,audioLevel*2)}%`}}/></div><div className="flex gap-4"><button onClick={togglePause} className="px-8 py-4 bg-emerald-500 text-white rounded-full font-bold uppercase text-[10px]">{isPaused?<Play className="w-4 h-4"/>:<Pause className="w-4 h-4"/>}</button><button onClick={stopRecording} className="px-8 py-4 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px]"><Square className="w-4 h-4"/></button></div></div>}
+                  {!isRecording ? <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all transform hover:scale-105 active:scale-95"><Mic className="w-6 h-6"/> Aufnahme starten</button> : <div className="flex flex-col items-center gap-4"><div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338]" style={{width:`${Math.min(100,audioLevel*2)}%`}}/></div><div className="flex gap-4"><button onClick={togglePause} className="px-8 py-4 bg-emerald-500 text-white rounded-full font-bold uppercase text-[10px] shadow-lg transition-all">{isPaused?<Play className="w-4 h-4"/>:<Pause className="w-4 h-4"/>} {isPaused?"Weiter":"Pause"}</button><button onClick={stopRecording} className="px-8 py-4 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px] shadow-lg"><Square className="w-4 h-4"/></button></div></div>}
                   {!isRecording && <label className="text-[10px] font-bold opacity-30 uppercase cursor-pointer hover:opacity-100 flex items-center gap-2"><UploadCloud className="w-4 h-4"/> Upload<input type="file" accept="audio/*" className="hidden" onChange={e=>e.target.files[0] && processAudio(e.target.files[0], setTranscript)}/></label>}
                 </div>
-                {isTranscribing && <div className="absolute inset-0 bg-white/60 backdrop-blur-sm z-10 flex flex-col items-center justify-center"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin"/><p className="text-xs font-bold uppercase">Transkribiere...</p></div>}
+                {isTranscribing && <div className="absolute inset-0 bg-white/60 backdrop-blur-sm z-10 flex flex-col items-center justify-center"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin"/><p className="text-xs font-bold uppercase tracking-widest">Verarbeite Audio...</p></div>}
                 <textarea value={transcript} onChange={e=>setTranscript(e.target.value)} placeholder="Deine Nachricht..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none placeholder:text-[#2c233e]/10"/>
                 <div className="p-8 border-t border-white/40 flex justify-end bg-white/10"><button onClick={handleClientSubmit} disabled={isSending||!transcript||!clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all">{isSending?<Loader2 className="animate-spin"/>:<><Send className="w-4 h-4"/> Absenden</>}</button></div>
               </div>
@@ -540,7 +539,7 @@ export default function App() {
              </div>
           </div>
         )}
-        {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4 tracking-tight">Analyse aktiv.</h2><p className="text-xl opacity-40">Freystil Sales Bot kalibriert Ergebnisse...</p></div>}
+        {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4 tracking-tight">Analyse aktiv.</h2><p className="text-xl opacity-40">Intelligence Bot kalibriert Ergebnisse...</p></div>}
         {step === 4 && outputJson && (
           <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
              <div className="flex justify-between items-center gap-8">
