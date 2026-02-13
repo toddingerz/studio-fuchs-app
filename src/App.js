@@ -29,20 +29,21 @@ const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 const initFirebase = () => {
-  if (db && auth) return true; // Bereits erfolgreich initialisiert
+  if (db && auth) return true; // Bereits bereit
   try {
-    // Prüfen, ob die globale Config-Variable existiert
-    const configSource = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+    // Check alle möglichen Vercel/Environment Quellen
+    const configSource = (typeof __firebase_config !== 'undefined' && __firebase_config) || 
+                         (window && window.__firebase_config) || 
+                         (process.env && process.env.REACT_APP_FIREBASE_CONFIG);
     
     if (configSource) {
-      // Firebase erwartet ein Objekt. Wir parsen nur, wenn es ein String ist.
       const firebaseConfig = typeof configSource === 'string' ? JSON.parse(configSource) : configSource;
-      
-      // Standalone Initialisierung ohne NgModules (React Pattern)
-      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-      auth = getAuth(app);
-      db = getFirestore(app);
-      return true;
+      if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
+        app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+        auth = getAuth(app);
+        db = getFirestore(app);
+        return true;
+      }
     }
   } catch (e) {
     console.error("Firebase Init Error:", e);
@@ -50,14 +51,14 @@ const initFirebase = () => {
   return false;
 };
 
-// Sofortiger Initialisierungsversuch beim Laden
+// Sofort-Initialisierung
 initFirebase();
 
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
 
 // =================================================================
-// DATEN
+// DATEN (STRENG NACH DESIGN-VORLAGE)
 // =================================================================
 
 const COMPANY_SIZES = ["Nur ich (Solo)", "1-5 Mitarbeiter", "6-20 Mitarbeiter", "21-100 Mitarbeiter", "Über 100 Mitarbeiter"];
@@ -159,6 +160,7 @@ export default function App() {
     return cleaned;
   };
 
+  // FIX: callAI mit robuster Exponential Backoff Retry-Logik (429 Fix) und flachem Payload (400 Fix)
   const callAI = async (payload, maxRetries = 7) => {
     const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
     const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
@@ -168,7 +170,11 @@ export default function App() {
             const res = await fetch(PROXY_URL, {
                 method: "POST", 
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
+                // Payload wird direkt gespreaded für Backend-Kompatibilität (Fix für "payload" Key Error)
+                body: JSON.stringify({ 
+                    model: "gemini-2.5-flash-preview-09-2025", 
+                    ...payload 
+                })
             });
 
             if (res.status === 429 && i < maxRetries - 1) {
@@ -176,11 +182,12 @@ export default function App() {
                 continue;
             }
 
+            const data = await res.json();
             if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(String(err.message || err.error || `Server Fehler: ${res.status}`));
+                const err = data.message || data.error || `Fehler: ${res.status}`;
+                throw new Error(String(err));
             }
-            return await res.json();
+            return data;
         } catch (error) {
             if (i === maxRetries - 1) throw error;
             await new Promise(r => setTimeout(r, delays[i]));
@@ -195,7 +202,14 @@ export default function App() {
     reader.onload = async () => {
       try {
         const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
-        const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }] }] });
+        const data = await callAI({ 
+            contents: [{ 
+                parts: [
+                    { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, 
+                    { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }
+                ] 
+            }] 
+        });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
       } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
@@ -249,11 +263,13 @@ export default function App() {
     setIsSending(true);
     setAppError(null);
     try {
-      // FIX: Sicherstellen, dass die Datenbank bereit ist (Regel 3)
-      const success = initFirebase();
-      if (!success) throw new Error("Firebase konnte nicht initialisiert werden. Bitte Konfiguration prüfen.");
+      // Re-Init Check vor dem Senden
+      if (!db || !auth) {
+          const success = initFirebase();
+          if (!success) throw new Error("Datenbank-Dienst nicht bereit.");
+      }
       
-      // FIX: Authentifizierung vor dem Schreibvorgang sicherstellen (Regel 3)
+      // FIX: Authentifizierung vor Schreibvorgang (Regel 3)
       if (!auth.currentUser) {
           if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
@@ -285,7 +301,7 @@ export default function App() {
     setWebsiteUrl(sub.website || "");
     setSocialUrl(sub.social || "");
     setStep(2); 
-    setTimeout(() => { categorySectionRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
+    setTimeout(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, 100);
   };
 
   const handleDNAAnalyse = async () => {
@@ -425,7 +441,7 @@ export default function App() {
         ) : (
           <>
             <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
+            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
               <div className="lg:col-span-5">
                 <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
@@ -454,6 +470,7 @@ export default function App() {
                       <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
                 </div>
                 <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
                   <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
@@ -501,7 +518,7 @@ export default function App() {
             <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4" /> Posteingang ({submissions.length})</h2>
             {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: {String(activeClientName)} aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {submissions.map(sub => (
+              {submissions.length === 0 ? <div className="col-span-full border-2 border-dashed border-[#2c233e]/10 rounded-[4rem] p-24 text-center opacity-30 font-bold">Warte auf Kundendaten...</div> : submissions.map(sub => (
                 <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
                   <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name || "Gast")}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded">{String(sub.category || "Unklar")}</span></div>
                   <p className="text-sm italic opacity-60 line-clamp-3 mb-10 leading-relaxed">"{String(sub.text || "")}"</p>
