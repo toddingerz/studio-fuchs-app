@@ -24,21 +24,30 @@ import {
 // =================================================================
 
 let app, auth, db;
-// FIX: appId bereinigen, um Pfad-Segment-Fehler in Firebase zu verhindern (Regel 1)
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
+// FIX: Aggressive Bereinigung der appId für Firebase Pfade (Regel 1 konform)
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
-try {
-  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-  if (configStr) {
-    const firebaseConfig = JSON.parse(configStr);
-    app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
-    db = getFirestore(app);
+const initFirebase = () => {
+  if (db) return true; // Bereits initialisiert
+  try {
+    const configSource = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+    if (configSource) {
+      // Firebase erwartet ein Objekt. Wir parsen nur, wenn es ein String ist.
+      const firebaseConfig = typeof configSource === 'string' ? JSON.parse(configSource) : configSource;
+      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+      auth = getAuth(app);
+      db = getFirestore(app);
+      return true;
+    }
+  } catch (e) {
+    console.error("Firebase Init Error:", e);
   }
-} catch (e) {
-  console.error("Firebase Initialization Error:", e);
-}
+  return false;
+};
+
+// Erster Initialisierungsversuch
+initFirebase();
 
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
@@ -231,14 +240,18 @@ export default function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
   };
 
-  // FIX: Sorgen für Auth vor Datenbank-Schreibvorgang (Regel 3)
   const handleClientSubmit = async () => {
     if (!clientName.trim() || !transcript.trim()) return;
     setIsSending(true);
+    setAppError(null);
     try {
-      if (!db || !auth) throw new Error("Datenbank-Dienst nicht bereit.");
+      // FIX: Versuche Re-Init, falls db noch nicht bereit ist
+      if (!db || !auth) {
+          const success = initFirebase();
+          if (!success) throw new Error("Firebase konnte nicht initialisiert werden. Bitte Konfiguration prüfen.");
+      }
       
-      // Sicherstellen, dass wir angemeldet sind (Regel 3)
+      // FIX: Sicherstellen, dass wir angemeldet sind (Regel 3)
       if (!auth.currentUser) {
           if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
@@ -252,7 +265,10 @@ export default function App() {
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
       });
       setClientSubmitted(true);
-    } catch (err) { setAppError("Senden fehlgeschlagen: " + String(err.message)); }
+    } catch (err) { 
+        console.error("Submit Error:", err);
+        setAppError("Senden fehlgeschlagen: " + String(err.message)); 
+    }
     finally { setIsSending(false); }
   };
 
@@ -317,20 +333,36 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'client') setAppMode('client');
-    if (auth) {
-        const initAuth = async () => {
+    
+    const startAuth = async () => {
+        initFirebase();
+        if (auth) {
             try {
-                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-                    await signInWithCustomToken(auth, window.__initial_auth_token);
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
-            } catch (e) { console.error("Auth Error", e); }
-        };
-        initAuth();
-        return onAuthStateChanged(auth, setUser);
-    }
+            } catch (e) { console.error("Initial Auth Error:", e); }
+            onAuthStateChanged(auth, setUser);
+        }
+    };
+    startAuth();
   }, []);
+
+  useEffect(() => {
+    if (!db || !user || !isAdminLoggedIn) return;
+    try {
+      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
+      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      }, (err) => {
+        console.error("Sync Error:", err);
+      });
+      return () => unsubscribe();
+    } catch (err) { console.error("Firestore Sync Error", err); }
+  }, [user, isAdminLoggedIn]);
 
   // --- RENDER ---
 
@@ -382,7 +414,7 @@ export default function App() {
       </header>
       <main className="max-w-6xl mx-auto px-8 py-16 animate-in fade-in duration-700">
         {clientSubmitted ? (
-          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60">
+          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
             <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
             <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
@@ -391,7 +423,7 @@ export default function App() {
         ) : (
           <>
             <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
+            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
               <div className="lg:col-span-5">
                 <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
@@ -470,7 +502,7 @@ export default function App() {
               {submissions.map(sub => (
                 <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
                   <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name || "Gast")}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded">{String(sub.category || "Unklar")}</span></div>
-                  <p className="text-sm italic opacity-60 line-clamp-3 mb-6 leading-relaxed">"{String(sub.text || "")}"</p>
+                  <p className="text-sm italic opacity-60 line-clamp-3 mb-10 leading-relaxed">"{String(sub.text || "")}"</p>
                   <button onClick={() => loadFromInbox(sub)} className="w-full py-3 bg-[#2c233e] text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-black transition-all">Laden</button>
                 </div>
               ))}
