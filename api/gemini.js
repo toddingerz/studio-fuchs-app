@@ -13,20 +13,21 @@ export default async function handler(req, res) {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    return res.status(500).json({ error: 'MISSING_API_KEY', message: 'API Key fehlt in Vercel.' });
+    console.error("SERVER ERROR: GEMINI_API_KEY fehlt.");
+    return res.status(500).json({ error: 'CONFIG_ERROR', message: 'Server-Konfiguration fehlt.' });
   }
 
   try {
-    const { model, ...body } = req.body;
+    // Extrahiere Modell, nutze Rest als direkten Google-Body
+    const { model, ...googlePayload } = req.body;
     const targetModel = model || "gemini-2.5-flash-preview-09-2025";
     
-    // WICHTIG: Die URL muss exakt so aufgebaut sein für Gemini 1.5/2.5
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(googlePayload)
       }
     );
 
