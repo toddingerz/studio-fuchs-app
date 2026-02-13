@@ -158,7 +158,7 @@ export default function App() {
       });
       return () => unsubscribe();
     } catch (err) { console.error("Firestore Error", err); }
-  }, [user, isAdminLoggedIn]);
+  }, [user, isAdminLoggedIn, appId]);
 
   // --- HELPER ---
   const copySimpleText = (text, callback) => {
@@ -194,12 +194,15 @@ export default function App() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
               model: "gemini-2.5-flash-preview-09-2025", 
-              payload: payload // Matches handler in image_b20884.png
+              payload: payload 
             })
         });
         
         const data = await response.json();
-        if (!response.ok) throw new Error(String(data.message || data.error || "Server Fehler"));
+        if (!response.ok) {
+            const errorMessage = data.message || data.error || "Server Fehler";
+            throw new Error(typeof errorMessage === 'object' ? JSON.stringify(errorMessage) : errorMessage);
+        }
         return data;
     } catch (e) {
         throw e;
@@ -213,10 +216,22 @@ export default function App() {
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
-        const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio auf Deutsch." }, { inlineData: { mimeType: blob.type || 'audio/webm', data: reader.result.split(',')[1] } }] }] });
+        // FIX: Clean MIME type (stripping codecs) to avoid 400 error from Google API
+        const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
+        
+        const data = await callAI({ 
+          contents: [{ 
+            parts: [
+              { text: "Transkribiere dieses Audio auf Deutsch." }, 
+              { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }
+            ] 
+          }] 
+        });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
-      } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
+      } catch (err) { 
+        setAppError("Transkription fehlgeschlagen: " + String(err.message)); 
+      }
       finally { setIsTranscribing(false); }
     };
   };
@@ -292,31 +307,30 @@ export default function App() {
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
-  const generateDNA = async () => {
+  const handleDNAAnalyse = async () => {
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
-      const payload = {
+      const data = await callAI({
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
         contents: [{ parts: [{ text: `Input: ${transcript}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
         generationConfig: { responseMimeType: "application/json" }
-      };
-      const data = await callAI(payload);
-      setOutputJson(JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text)));
+      });
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
       setStep(4);
     } catch (err) { setAppError(String(err.message)); setStep(2); }
     finally { setIsGenerating(false); }
   };
 
-  const generateStrategy = async () => {
+  const handleStrategyAnalyse = async () => {
     setIsGeneratingStrategy(true);
     try {
-      const payload = {
+      const data = await callAI({
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
         contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
-      };
-      const data = await callAI(payload);
-      const jsonResponse = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
-      setStrategyReport(String(jsonResponse.report));
+      });
+      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      setStrategyReport(String(res.report));
     } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
     finally { setIsGeneratingStrategy(false); }
   };
@@ -371,7 +385,7 @@ export default function App() {
       </header>
       <main className="max-w-6xl mx-auto px-8 py-16">
         {clientSubmitted ? (
-          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60">
+          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
             <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
             <p className="text-xl opacity-60 mb-10">Daten wurden sicher übermittelt.</p>
@@ -380,7 +394,7 @@ export default function App() {
         ) : (
           <>
             <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
+            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
               <div className="lg:col-span-5">
                 <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
@@ -503,10 +517,12 @@ export default function App() {
               <h1 className="text-4xl font-bold">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
               <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
             </div>
+            {/* STRATEGIE REPORT CARD */}
             <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={handleStrategyAnalyse} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
               {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
             </div>
+            {/* JSON BOX */}
             <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/10"><span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/40" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
           </div>
         )}
