@@ -207,9 +207,17 @@ export default function App() {
     reader.onload = async () => {
       const base64 = reader.result.split(',')[1];
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        const res = await fetch(`/api/gemini`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents: [{ parts: [{ text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, { inlineData: { mimeType: file.type || 'audio/mp3', data: base64 } }] }] })
+body: JSON.stringify({
+  model: "gemini-2.5-flash-preview-09-2025",
+  contents: [{
+    parts: [
+      { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." },
+      { inlineData: { mimeType: file.type || 'audio/mp3', data: base64 } }
+    ]
+  }]
+})
         });
         const data = await res.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
