@@ -21,19 +21,30 @@ import {
 } from 'lucide-react';
 
 // =================================================================
-// 1. FIREBASE INITIALISIERUNG (REGEL-KONFORM)
+// 1. STABILE FIREBASE INITIALISIERUNG
 // =================================================================
 
-const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+let firebaseApp, auth, db;
+
+try {
+  // Sicherer Zugriff auf globale Konfiguration
+  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+  if (configStr) {
+    const firebaseConfig = typeof configStr === 'string' ? JSON.parse(configStr) : configStr;
+    if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
+      firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+      auth = getAuth(firebaseApp);
+      db = getFirestore(firebaseApp);
+    }
+  }
+} catch (e) {
+  console.error("Firebase Setup Error:", e);
+}
+
 const appId = (typeof __app_id !== 'undefined' ? __app_id : 'brand-dna-studio-fuchs-live').replace(/[^a-zA-Z0-9_-]/g, '_');
-
-// Initialisierung außerhalb der Komponente für Singleton-Pattern
-const app = Object.keys(firebaseConfig).length > 0 ? (!getApps().length ? initializeApp(firebaseConfig) : getApp()) : null;
-const auth = app ? getAuth(app) : null;
-const db = app ? getFirestore(app) : null;
-
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
+const apiKey = ""; // System-Vorgabe
 
 // =================================================================
 // DATEN (DEIN DESIGN-STAND)
@@ -82,6 +93,7 @@ export default function App() {
   const [socialUrl, setSocialUrl] = useState("");
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
+  const [isMagicLink, setIsMagicLink] = useState(false);
   
   // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -113,10 +125,13 @@ export default function App() {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
 
-  // --- 1. AUTH INITIALISIERUNG (MANDATORY RULE 3) ---
+  // --- 1. AUTH INITIALISIERUNG ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') setAppMode('client');
+    if (params.get('view') === 'client') {
+        setAppMode('client');
+        setIsMagicLink(true);
+    }
 
     if (!auth) return;
 
@@ -137,23 +152,20 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. DATA FETCHING (MANDATORY RULE 1) ---
+  // --- 2. DATA FETCHING ---
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
     
-    // Pfad: /artifacts/{appId}/public/data/{collectionName}
     const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-    
     const unsubscribe = onSnapshot(submissionsRef, 
       (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
       },
       (error) => {
-        setAppError("Datenbank-Fehler: Zugriff verweigert.");
+        console.error("Firestore error:", error);
       }
     );
-    
     return () => unsubscribe();
   }, [user, isAdminLoggedIn]);
 
@@ -193,8 +205,10 @@ export default function App() {
             const res = await fetch(PROXY_URL, {
                 method: "POST", 
                 headers: { "Content-Type": "application/json" },
-                // FIX: Daten werden flach gesendet (gemäß Screenshot-Handler)
-                body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
+                body: JSON.stringify({ 
+                    model: "gemini-2.5-flash-preview-09-2025", 
+                    ...payload // Flache Struktur ohne 'payload' Key (behebt 400er)
+                })
             });
 
             if (res.status === 429 && i < maxRetries - 1) {
@@ -274,14 +288,14 @@ export default function App() {
     setIsSending(true);
     setAppError(null);
     try {
-      if (!db || !user) throw new Error("Datenbank nicht bereit oder nicht angemeldet.");
+      if (!db || !user) throw new Error("Datenbank nicht bereit. Bitte lade die Seite neu.");
       
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
         name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
       });
       setClientSubmitted(true);
-    } catch (err) { setAppError("Senden fehlgeschlagen: " + String(err.message)); }
+    } catch (err) { setAppError("Fehler: " + String(err.message)); }
     finally { setIsSending(false); }
   };
 
@@ -296,7 +310,7 @@ export default function App() {
     setWebsiteUrl(sub.website || "");
     setSocialUrl(sub.social || "");
     setStep(2); 
-    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDNAAnalyse = async () => {
@@ -325,6 +339,20 @@ export default function App() {
       setStrategyReport(String(res.report));
     } catch (err) { setAppError("Analyse-Fehler: " + String(err.message)); } 
     finally { setIsGeneratingStrategy(false); }
+  };
+
+  const generateHooks = async () => {
+    setIsGeneratingHooks(true);
+    try {
+      const data = await callAI({
+        systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
+        contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
+      });
+      const raw = data.candidates[0].content.parts[0].text;
+      setSocialHooks(JSON.parse(cleanJsonResponse(raw)));
+    } catch (e) { setAppError(String(e.message)); }
+    finally { setIsGeneratingHooks(false); }
   };
 
   // --- RENDER ---
@@ -405,11 +433,11 @@ export default function App() {
                     <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
                   </div>
                   <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Teamgröße</label>
+                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Wie groß ist dein Team?</label>
                     <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
                   </div>
                   <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Bereich</label>
+                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">In welchem Bereich bist du tätig?</label>
                     <div className="grid grid-cols-2 gap-3">
                       {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
                       <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
