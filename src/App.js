@@ -20,39 +20,29 @@ import {
 } from 'lucide-react';
 
 // =================================================================
-// 1. KONFIGURATION (ONLINE ONLY)
+// 1. STABILE FIREBASE CONFIG (VERCEL READY)
 // =================================================================
 
-let app, auth, db;
-const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
-const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
-
-const initFirebase = () => {
-  if (db && auth) return true;
-  try {
-    const configSource = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-    if (configSource) {
-      const firebaseConfig = typeof configSource === 'string' ? JSON.parse(configSource) : configSource;
-      if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
-        app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-        auth = getAuth(app);
-        db = getFirestore(app);
-        return true;
-      }
-    }
-    if (getApps().length > 0) {
-        app = getApp();
-        auth = getAuth(app);
-        db = getFirestore(app);
-        return !!(db && auth);
-    }
-  } catch (e) {
-    console.error("Firebase Init Error:", e);
-  }
-  return false;
+// Wir nutzen hier die feste Konfiguration, damit db NIEMALS undefined ist.
+const firebaseConfig = {
+  apiKey: "AIzaSyCd9YnXBiLct5RFgqqDCnvIODV5dVtKkmI",
+  authDomain: "studio-fuchs.firebaseapp.com",
+  projectId: "studio-fuchs",
+  storageBucket: "studio-fuchs.firebasestorage.app",
+  messagingSenderId: "743239245515",
+  appId: "1:743239245515:web:b32ec9724c0dcc853b454e"
 };
 
-initFirebase();
+// Konstante App-ID für konsistente Pfade (keine __app_id mehr)
+const appId = "brand-dna-studio-fuchs-live";
+
+// Initialisierung SOFORT ausführen (nicht erst im Render-Zyklus)
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Debug Log beim Start
+console.log("Firebase init ok", { hasDb: !!db, projectId: firebaseConfig.projectId });
 
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
@@ -91,13 +81,14 @@ const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuch
 export default function App() {
   const [appMode, setAppMode] = useState('select'); 
   const [user, setUser] = useState(null);
-  const [authReady, setAuthReady] = useState(false); // NEU: Auth Ready State
+  const [authReady, setAuthReady] = useState(false); // NEU: Warten auf Auth
   const [submissions, setSubmissions] = useState([]);
   const [activeClientName, setActiveClientName] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
   
+  // Workspace
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -105,18 +96,21 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
+  // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
 
+  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
+  // Client Input
   const [clientName, setClientName] = useState("");
   const [clientCompany, setClientCompany] = useState("");
   const [clientCategory, setClientCategory] = useState(null);
@@ -133,8 +127,53 @@ export default function App() {
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
 
-  // --- ACTIONS & LOGIK ---
+  // --- 1. AUTH INITIALISIERUNG ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'client') setAppMode('client');
 
+    // Sofortiger Anmeldeversuch
+    const initAuth = async () => {
+      try {
+        if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+          await signInWithCustomToken(auth, window.__initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth Failure:", e);
+      }
+    };
+    initAuth();
+
+    // Listener setzt authReady auf true, sobald wir einen User haben (oder null, aber Init fertig ist)
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+        setUser(u);
+        setAuthReady(true);
+        console.log("Auth Ready:", !!u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- 2. FIRESTORE SYNC ---
+  useEffect(() => {
+    if (!db || !user || !isAdminLoggedIn) return;
+    
+    // Pfad: /artifacts/brand-dna-studio-fuchs-live/public/data/submissions
+    const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
+    
+    const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+    }, (err) => {
+      console.error("Firestore Error:", err);
+      // Kein UI-Error hier, um User nicht zu verwirren, falls nur Permissions fehlen
+    });
+    
+    return () => unsubscribe();
+  }, [user, isAdminLoggedIn]);
+
+  // --- API & HELPERS ---
   const copySimpleText = (text, callback) => {
     if (!text) return;
     const textArea = document.createElement("textarea");
@@ -162,9 +201,7 @@ export default function App() {
   };
 
   const callAI = async (payload, maxRetries = 7) => {
-    const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
     const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
-
     for (let i = 0; i < maxRetries; i++) {
         try {
             const res = await fetch(PROXY_URL, {
@@ -172,12 +209,10 @@ export default function App() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
             });
-
             if (res.status === 429 && i < maxRetries - 1) {
                 await new Promise(r => setTimeout(r, delays[i]));
                 continue;
             }
-
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
                 throw new Error(String(err.message || err.error || `Server Fehler: ${res.status}`));
@@ -199,8 +234,8 @@ export default function App() {
         const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
         const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }] }] });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
-      } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
+        if (text) setTranscript(prev => prev ? prev + "\n" + text : text);
+      } catch (err) { setAppError("Transkription fehlgeschlagen."); }
       finally { setIsTranscribing(false); }
     };
   };
@@ -231,27 +266,41 @@ export default function App() {
       };
       mediaRecorderRef.current.start();
       setIsRecording(true); setIsPaused(false);
-    } catch (err) { setAppError("Mikrofonfehler: " + String(err.message)); }
+    } catch (err) { setAppError("Mikrofon-Zugriff nicht möglich."); }
   };
   
   const togglePause = () => {
       if (!mediaRecorderRef.current) return;
-      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); setAudioLevel(0); } 
-      else { mediaRecorderRef.current.resume(); setIsPaused(false); }
+      if (!isPaused) { 
+        mediaRecorderRef.current.stop(); 
+        setIsPaused(true); 
+        setAudioLevel(0);
+      } else { 
+        mediaRecorderRef.current.resume(); 
+        setIsPaused(false); 
+      }
   };
   
   const stopRecording = () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
-      setIsRecording(false); setIsPaused(false);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+    setIsPaused(false);
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
   };
 
+  // --- SUBMIT LOGIK (Stabilisiert) ---
   const handleClientSubmit = async () => {
     if (!clientName.trim() || !transcript.trim()) return;
+    
+    // Harte Prüfung: Ist DB da? Ist User da?
+    if (!db) { setAppError("Datenbank nicht initialisiert (db fehlt)."); return; }
+    if (!user) { setAppError("Nicht eingeloggt (Auth fehlt)."); return; }
+
     setIsSending(true);
     setAppError(null);
     try {
-      // Keine manuellen Checks mehr, wir verlassen uns auf den disabled-Button und Firestore-Error
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
         name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
@@ -264,9 +313,10 @@ export default function App() {
     finally { setIsSending(false); }
   };
 
-  const loadFromInbox = (sub) => {
+  // --- WORKFLOW LOGIK ---
+  const loadSubmission = (sub) => {
     setTranscript(sub.text || "");
-    if (sub.category) {
+    if (sub.category) { 
         if (sub.category === "Nicht sicher") setSelectedCategory(null);
         else { const found = CATEGORIES.find(c => c.label === sub.category); setSelectedCategory(found || null); }
     }
@@ -274,8 +324,8 @@ export default function App() {
     setActiveClientName(String(sub.name || "Gast"));
     setWebsiteUrl(sub.website || "");
     setSocialUrl(sub.social || "");
-    setStep(2); 
-    setTimeout(() => { categorySectionRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
+    setStep(2);
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
   const handleDNAAnalyse = async () => {
@@ -283,13 +333,13 @@ export default function App() {
     try {
       const data = await callAI({
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nFirmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
+        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
         generationConfig: { responseMimeType: "application/json" }
       });
       const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
       setOutputJson(JSON.parse(cleanJsonResponse(rawJson)));
       setStep(4);
-    } catch (err) { setAppError(String(err.message)); setStep(2); }
+    } catch (err) { setAppError(String(err.message)); setStep(2); } 
     finally { setIsGenerating(false); }
   };
 
@@ -298,11 +348,11 @@ export default function App() {
     try {
       const data = await callAI({
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
       });
       const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
       setStrategyReport(String(res.report));
-    } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
+    } catch (err) { setAppError("Bericht Fehler."); }
     finally { setIsGeneratingStrategy(false); }
   };
 
@@ -320,52 +370,7 @@ export default function App() {
     finally { setIsGeneratingHooks(false); }
   };
 
-  // --- EFFECTS ---
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') setAppMode('client');
-    
-    // Auth Listener Logik aktualisiert für authReady State
-    if (auth) {
-        const initAuth = async () => {
-            try {
-                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-                    await signInWithCustomToken(auth, window.__initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (e) { console.error("Initial Auth Error:", e); }
-        };
-        initAuth();
-        
-        const unsubscribe = onAuthStateChanged(auth, (u) => {
-            setUser(u);
-            setAuthReady(true); // Auth ist fertig, Button kann aktiv werden
-        });
-        return () => unsubscribe();
-    } else {
-        // Fallback falls kein Auth Service (sollte online nicht passieren)
-        setAuthReady(true); 
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!db || !user || !isAdminLoggedIn) return;
-    try {
-      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-      }, (err) => {
-        console.error("Sync Error:", err);
-      });
-      return () => unsubscribe();
-    } catch (err) { console.error("Firestore Sync Error", err); }
-  }, [user, isAdminLoggedIn]);
-
   // --- RENDER ---
-
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
       <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
@@ -391,12 +396,8 @@ export default function App() {
     <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
       <form onSubmit={(e) => { 
         e.preventDefault(); 
-        if(pinInput === ADMIN_PIN) {
-          setIsAdminLoggedIn(true);
-          setAppMode('agency'); 
-        } else {
-          setLoginError(true);
-        }
+        if(pinInput === ADMIN_PIN) { setIsAdminLoggedIn(true); setAppMode('agency'); } 
+        else setLoginError(true); 
       }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
         <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
         <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
@@ -472,10 +473,9 @@ export default function App() {
                   <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
                   <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
                     <button 
-                        onClick={handleClientSubmit} 
-                        // WICHTIG: Button disabled wenn Auth noch nicht fertig (authReady) oder Input fehlt
-                        disabled={isSending || !authReady || !transcript || !clientName} 
-                        className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all"
+                      onClick={handleClientSubmit} 
+                      disabled={isSending || !authReady || !transcript || !clientName} 
+                      className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all"
                     >
                       {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Absenden</>}
                     </button>
@@ -495,7 +495,7 @@ export default function App() {
       <header className="px-8 h-20 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md sticky top-0 z-20">
         <span className="font-bold text-xl">Designstudio<span className="text-[#e32338]">Fuchs</span></span>
         <div className="flex items-center gap-8">
-          <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
+          <button onClick={() => copySimpleText(window.location.href.split('?')[0] + '?view=client', () => setLinkCopied(true))} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
           <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button>
         </div>
       </header>
