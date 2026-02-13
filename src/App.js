@@ -23,7 +23,7 @@ import {
 // =================================================================
 
 let app, auth, db;
-// Bereinigung der appId für Firebase (Slashes in Unterstriche umwandeln)
+// FIX: appId bereinigen, um Pfad-Segment-Fehler in Firebase zu verhindern
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
 const appId = rawAppId.replace(/\//g, '_');
 
@@ -36,9 +36,8 @@ try {
   console.warn("Firebase Init skipped", e);
 }
 
-const PREVIEW_API_KEY = ""; 
 const ADMIN_PIN = "1704"; 
-const PROXY_URL = "/api/gemini"; // Dein Vercel Backend Proxy
+const PROXY_URL = "/api/gemini"; 
 
 // =================================================================
 // DATEN
@@ -68,18 +67,11 @@ const INTERVIEW_QUESTIONS = [
 // PROMPTS
 // =================================================================
 
-const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. 
-Deine Aufgabe: Extrahiere aus Rohtext, Firmengröße und Web-Daten eine präzise Marken-Identität nach dem Base44-Standard.
-Gib AUSSCHLIESSLICH valides JSON aus. Keine Erklärungen.`;
-
-const STRATEGY_SYSTEM_INSTRUCTION = `
-Du bist Thorsten Fuchs von designstudiofuchs.de, spezialisierter Sales-Mail-Architekt.
-Erstelle eine "Freystil Sales"-Analyse.
-STRUKTUR: Cliffhanger-Betreff, Einstieg, Pain/Potenzial, Storybased Lösung, Nutzen, CTA.
-Antworte im JSON Format mit einem Feld "report".`;
+const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Rohtext, Firmengröße und Web-Daten eine präzise Marken-Identität nach dem Base44-Standard. Gib AUSSCHLIESSLICH valides JSON aus. Keine Erklärungen.`;
+const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, spezialisierter Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse. Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
-// APP COMPONENT
+// APP
 // =================================================================
 
 export default function App() {
@@ -120,8 +112,6 @@ export default function App() {
   const [clientCategory, setClientCategory] = useState(null);
   const [clientSubmitted, setClientSubmitted] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  
-  // Audio
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -136,12 +126,18 @@ export default function App() {
   // --- INITIALISIERUNG ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') setAppMode('client');
+    if (params.get('view') === 'client') {
+      setAppMode('client');
+      setIsMagicLink(true);
+    }
     if (auth) {
         const initAuth = async () => {
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
-                else await signInAnonymously(auth);
+                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+                    await signInWithCustomToken(auth, window.__initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
             } catch (e) { console.error("Auth Error", e); }
         };
         initAuth();
@@ -149,6 +145,7 @@ export default function App() {
     }
   }, []);
 
+  // --- FIRESTORE SYNC ---
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
     try {
@@ -156,7 +153,9 @@ export default function App() {
       const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-      }, (error) => console.error("Firestore error:", error));
+      }, (err) => {
+        setAppError("Datenbank-Zugriff verweigert.");
+      });
       return () => unsubscribe();
     } catch (err) { console.error("Firestore Error", err); }
   }, [user, isAdminLoggedIn]);
@@ -189,54 +188,32 @@ export default function App() {
   };
 
   const callAI = async (payload) => {
-    // Falls in Vorschau-Umgebung
-    if (PREVIEW_API_KEY && window.location.hostname.includes('googleusercontent')) {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${PREVIEW_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          }
-        );
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || "Google API Fehler");
-        return data;
-    }
-
-    // ONLINE MODE: Payload-Struktur an dein Backend angepasst
     try {
         const response = await fetch(PROXY_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
               model: "gemini-2.5-flash-preview-09-2025", 
-              payload: payload // Backend erwartet model & payload
+              payload: payload // Matches handler in image_b20884.png
             })
         });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(String(errData.message || errData.error || "Server Fehler"));
-        }
-        return await response.json();
-    } catch (e) { throw e; }
+        
+        const data = await response.json();
+        if (!response.ok) throw new Error(String(data.message || data.error || "Server Fehler"));
+        return data;
+    } catch (e) {
+        throw e;
+    }
   };
 
-  // --- LOGIC ---
+  // --- AUDIO LOGIC ---
   const processAudio = async (blob) => {
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
-        const data = await callAI({ 
-          contents: [{ 
-            parts: [
-              { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch." }, 
-              { inlineData: { mimeType: blob.type || 'audio/webm', data: reader.result.split(',')[1] } }
-            ] 
-          }] 
-        });
+        const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio auf Deutsch." }, { inlineData: { mimeType: blob.type || 'audio/webm', data: reader.result.split(',')[1] } }] }] });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
       } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
@@ -263,20 +240,20 @@ export default function App() {
       
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
         processAudio(blob);
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(t => t.stop());
       };
       mediaRecorderRef.current.start();
       setIsRecording(true); setIsPaused(false);
-    } catch (err) { setAppError("Mikrofonfehler: " + String(err.message)); }
+    } catch (err) { setAppError("Mikrofon-Zugriff nicht möglich."); }
   };
   
   const togglePause = () => {
       if (!mediaRecorderRef.current) return;
-      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); } 
+      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); setAudioLevel(0); } 
       else { mediaRecorderRef.current.resume(); setIsPaused(false); }
   };
   
@@ -301,7 +278,7 @@ export default function App() {
     finally { setIsSending(false); }
   };
 
-  const loadSubmission = (sub) => {
+  const loadFromInbox = (sub) => {
     setTranscript(sub.text || "");
     if (sub.category) {
         if (sub.category === "Nicht sicher") setSelectedCategory(null);
@@ -315,35 +292,36 @@ export default function App() {
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
-  const handleDNAAnalyse = async () => {
+  const generateDNA = async () => {
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
-      const data = await callAI({
+      const payload = {
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
+        contents: [{ parts: [{ text: `Input: ${transcript}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
         generationConfig: { responseMimeType: "application/json" }
-      });
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
+      };
+      const data = await callAI(payload);
+      setOutputJson(JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text)));
       setStep(4);
     } catch (err) { setAppError(String(err.message)); setStep(2); }
     finally { setIsGenerating(false); }
   };
 
-  const handleStrategyAnalyse = async () => {
+  const generateStrategy = async () => {
     setIsGeneratingStrategy(true);
     try {
-      const data = await callAI({
+      const payload = {
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
-      });
-      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
-      setStrategyReport(String(res.report));
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
+      };
+      const data = await callAI(payload);
+      const jsonResponse = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      setStrategyReport(String(jsonResponse.report));
     } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
     finally { setIsGeneratingStrategy(false); }
   };
 
-  // --- RENDER SECTIONS ---
+  // --- UI RENDER ---
   
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
@@ -360,7 +338,7 @@ export default function App() {
         <button onClick={() => setAppMode('login')} className="group bg-[#2c233e]/90 p-16 rounded-[4rem] text-center shadow-2xl transition-all duration-300 text-white">
           <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><Briefcase className="w-10 h-10 text-white" /></div>
           <h2 className="text-3xl font-bold mb-3">Agentur-Dashboard</h2>
-          <p className="opacity-40 font-medium text-sm">Analyse & Strategie.</p>
+          <p className="opacity-40 font-medium text-sm">Analyse & Base44 Export.</p>
         </button>
       </div>
     </div>
@@ -369,13 +347,13 @@ export default function App() {
   if (appMode === 'login') return (
     <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
       <form onSubmit={(e) => { 
-        e.preventDefault(); 
-        if(pinInput === ADMIN_PIN) {
-          setIsAdminLoggedIn(true);
-          setAppMode('agency'); 
-        } else {
-          setLoginError(true);
-        }
+          e.preventDefault(); 
+          if(pinInput === ADMIN_PIN) {
+              setIsAdminLoggedIn(true);
+              setAppMode('agency'); 
+          } else {
+              setLoginError(true);
+          }
       }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
         <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
         <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
@@ -389,15 +367,15 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
       <header className="px-8 h-24 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md">
         <div className="font-bold text-2xl">Designstudio<span className="text-[#e32338]">Fuchs</span></div>
-        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full">Abbrechen</button>
+        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full transition-all">Abbrechen</button>
       </header>
       <main className="max-w-6xl mx-auto px-8 py-16">
         {clientSubmitted ? (
-          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
+          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
             <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
-            <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Zur Startseite</button>
+            <p className="text-xl opacity-60 mb-10">Daten wurden sicher übermittelt.</p>
+            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Startseite</button>
           </div>
         ) : (
           <>
@@ -421,7 +399,7 @@ export default function App() {
                     <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
                   </div>
                   <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Wie groß ist dein Team?</label>
+                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Teamgröße</label>
                     <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
                   </div>
                   <div className="space-y-4">
@@ -431,6 +409,7 @@ export default function App() {
                       <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
                 </div>
                 <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
                   <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
@@ -450,7 +429,7 @@ export default function App() {
                   <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
                   <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
                     <button onClick={handleClientSubmit} disabled={isSending || !transcript || !clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all">
-                      {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Analyse senden</>}
+                      {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Absenden</>}
                     </button>
                   </div>
                 </div>
@@ -475,13 +454,13 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-8 py-12 animate-in fade-in duration-700">
         {step === 1 && (
           <div className="mb-20">
-            <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4" /> Posteingang</h2>
+            <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4" /> Posteingang ({submissions.length})</h2>
             {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: {String(activeClientName)} aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {submissions.map(sub => (
                 <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
-                  <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name)}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded">{String(sub.category || "Unklar")}</span></div>
-                  <p className="text-sm italic opacity-60 line-clamp-3 mb-6 leading-relaxed">"{String(sub.text)}"</p>
+                  <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name || "Gast")}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded">{String(sub.category || "Unklar")}</span></div>
+                  <p className="text-sm italic opacity-60 line-clamp-3 mb-6 leading-relaxed">"{String(sub.text || "")}"</p>
                   <button onClick={() => loadSubmission(sub)} className="w-full py-3 bg-[#2c233e] text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-black transition-all">Laden</button>
                 </div>
               ))}
@@ -524,12 +503,10 @@ export default function App() {
               <h1 className="text-4xl font-bold">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
               <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
             </div>
-            {/* STRATEGIE REPORT CARD */}
             <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={handleStrategyAnalyse} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
               {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
             </div>
-            {/* JSON BOX */}
             <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/10"><span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/40" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
           </div>
         )}
