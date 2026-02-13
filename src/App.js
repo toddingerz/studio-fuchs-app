@@ -1,17 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  onAuthStateChanged, 
-  signInWithCustomToken
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot
-} from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot } from 'firebase/firestore';
 import { 
   ChevronRight, ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
   Sparkles, HelpCircle, Lightbulb, Globe, Mic, Send, Briefcase, Inbox, ArrowRight, Square, 
@@ -23,23 +13,20 @@ import {
 // 1. CONFIG & SETUP
 // =================================================================
 
-// Firebase Safe Init
 let app, auth, db;
 try {
   const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
   const firebaseConfig = JSON.parse(configStr);
-  
   if (Object.keys(firebaseConfig).length > 0) {
       app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
       auth = getAuth(app);
       db = getFirestore(app);
   }
-} catch (e) {
-  console.warn("Firebase Init skipped", e);
-}
+} catch (e) { console.warn("Firebase Init skipped", e); }
 
 // --- SETTINGS ---
-const PREVIEW_API_KEY = ""; // NUR FÜR LOKALE VORSCHAU/TESTS
+const PREVIEW_API_KEY = ""; // NUR FÜR LOKALE VORSCHAU NÖTIG
+const PROXY_URL = "/api/gemini"; 
 const appId = 'brand-dna-studio-fuchs-live';
 const ADMIN_PIN = "1704"; 
 
@@ -83,7 +70,7 @@ Tonalität: Kurz, präzise, CEO-tauglich.
 Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
-// APP
+// APP COMPONENT
 // =================================================================
 
 export default function App() {
@@ -93,9 +80,8 @@ export default function App() {
   const [activeClientName, setActiveClientName] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [loginError, setLoginError] = useState(false);
-
-  // Workspace
+  
+  // Workspace Data
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -103,14 +89,14 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
-  // Status & Results
+  // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
 
-  // Results Data
+  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
@@ -135,23 +121,16 @@ export default function App() {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   // 1. Auth & Init
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') {
-      setAppMode('client');
-      setIsMagicLink(true);
-    }
+    if (params.get('view') === 'client') setAppMode('client');
     if (auth) {
         const init = async () => {
             try {
-                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-                    await signInWithCustomToken(auth, window.__initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
+                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) await signInWithCustomToken(auth, window.__initial_auth_token);
+                else await signInAnonymously(auth);
             } catch (e) { console.error(e); }
         };
         init();
@@ -172,17 +151,15 @@ export default function App() {
   // --- API CALL LOGIC ---
   const callAI = async (payload) => {
     const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
-    
     if (!isLocal) {
-        const res = await fetch('/api/gemini', {
+        const res = await fetch(PROXY_URL, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
         });
         if (!res.ok) throw new Error((await res.json()).message || "Server Fehler");
         return await res.json();
     } 
-    
-    if (!PREVIEW_API_KEY) throw new Error("VORSCHAU: Bitte PREVIEW_API_KEY in Zeile 48 eintragen.");
+    if (!PREVIEW_API_KEY) throw new Error("VORSCHAU: Bitte API Key eintragen.");
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${PREVIEW_API_KEY}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -208,12 +185,8 @@ export default function App() {
   const loadSubmission = (sub) => {
     setTranscript(sub.text);
     if (sub.category) { 
-        if (sub.category === "Nicht sicher / Sonstiges") {
-             setSelectedCategory(null);
-        } else {
-             const found = CATEGORIES.find(c => c.label === sub.category); 
-             setSelectedCategory(found || null); 
-        }
+         const found = CATEGORIES.find(c => c.label === sub.category); 
+         setSelectedCategory(found || null); 
     }
     setCompanySize(sub.companySize || "");
     setActiveClientName(sub.name);
@@ -300,7 +273,7 @@ export default function App() {
       analyserRef.current = audioContextRef.current.createAnalyser();
       source.connect(analyserRef.current);
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-      const update = () => { analyserRef.current.getByteFrequencyData(dataArray); setAudioLevel(dataArray.reduce((a,b)=>a+b)/dataArray.length); animationFrameRef.current = requestAnimationFrame(update); };
+      const update = () => { if(!analyserRef.current) return; analyserRef.current.getByteFrequencyData(dataArray); setAudioLevel(dataArray.reduce((a,b)=>a+b)/dataArray.length); animationFrameRef.current = requestAnimationFrame(update); };
       update();
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
@@ -326,9 +299,11 @@ export default function App() {
 
   // --- RENDER ---
   const copyText = (t) => { navigator.clipboard.writeText(t); setCopied(true); setTimeout(()=>setCopied(false), 2000); };
-  
-  // MAGIC LINK COPY FIX
-  const [isMagicLink, setIsMagicLink] = useState(false);
+  const copyMagicLink = () => {
+    const url = window.location.href.split('?')[0] + '?view=client';
+    navigator.clipboard.writeText(url);
+    setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
+  };
   
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
@@ -356,11 +331,12 @@ export default function App() {
         {clientSubmitted ? <div className="flex flex-col items-center justify-center h-screen text-center"><div className="bg-white/60 p-16 rounded-[4rem] shadow-2xl"><Check className="w-16 h-16 text-[#e32338] mx-auto mb-6"/><h2 className="text-4xl font-bold mb-4">Danke!</h2><button onClick={()=>{setClientSubmitted(false); setAppMode('select');}} className="px-8 py-3 bg-[#2c233e] text-white rounded-full font-bold">Zurück</button></div></div> : (
           <div className="max-w-4xl mx-auto py-12">
             <h1 className="text-4xl font-bold text-center mb-12">Deine Story.</h1>
+            {appError && <div className="bg-red-50 text-red-600 p-4 rounded-xl text-center mb-6">{appError}</div>}
             <div className="bg-white/40 border border-white/60 rounded-[3rem] p-8 shadow-xl mb-8 space-y-4">
                <div className="grid grid-cols-2 gap-4"><input value={clientName} onChange={e=>setClientName(e.target.value)} placeholder="Name" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none"/><input value={clientCompany} onChange={e=>setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none"/></div>
                <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s=><button key={s} onClick={()=>setCompanySize(s)} className={`px-3 py-2 rounded-lg text-xs border ${companySize===s?'bg-[#e32338] text-white':'bg-white/40'}`}>{s}</button>)}</div>
                <div className="grid grid-cols-2 gap-2">
-                 {CATEGORIES.map(c=><button key={c.id} onClick={()=>setClientCategory(c.label)} className={`p-3 rounded-xl border text-left flex items-center gap-2 ${clientCategory===c.label?'bg-[#e32338] text-white':'bg-white/40'}`}><c.Icon className="w-4 h-4"/>{c.label}</button>)}
+                 {CATEGORIES.map(c=><button key={c.id} onClick={()=>setSelectedCategory(c)} className={`p-3 rounded-xl border text-left flex items-center gap-2 ${selectedCategory?.id===c.id?'bg-[#e32338] text-white':'bg-white/40'}`}><c.Icon className="w-4 h-4"/>{c.label}</button>)}
                  <button onClick={()=>setClientCategory("Nicht sicher / Sonstiges")} className={`p-3 rounded-xl border text-center text-xs ${clientCategory==="Nicht sicher / Sonstiges"?'bg-[#e32338] text-white':'bg-white/40'}`}>Ich weiß es nicht</button>
                </div>
                <div className="grid grid-cols-2 gap-4"><input value={clientWebsite} onChange={e=>setClientWebsite(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none"/><input value={clientSocial} onChange={e=>setClientSocial(e.target.value)} placeholder="Social Media" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none"/></div>
@@ -391,7 +367,6 @@ export default function App() {
           {step === 1 && (
             <div className="mb-20">
                <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4"/> Posteingang</h2>
-               {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: Daten von "{activeClientName}" aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                  {submissions.map(sub => (
                    <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
