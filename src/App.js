@@ -29,12 +29,16 @@ const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 const initFirebase = () => {
-  if (db) return true; // Bereits initialisiert
+  if (db && auth) return true; // Bereits erfolgreich initialisiert
   try {
+    // Prüfen, ob die globale Config-Variable existiert
     const configSource = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+    
     if (configSource) {
       // Firebase erwartet ein Objekt. Wir parsen nur, wenn es ein String ist.
       const firebaseConfig = typeof configSource === 'string' ? JSON.parse(configSource) : configSource;
+      
+      // Standalone Initialisierung ohne NgModules (React Pattern)
       app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
       auth = getAuth(app);
       db = getFirestore(app);
@@ -46,7 +50,7 @@ const initFirebase = () => {
   return false;
 };
 
-// Erster Initialisierungsversuch
+// Sofortiger Initialisierungsversuch beim Laden
 initFirebase();
 
 const ADMIN_PIN = "1704"; 
@@ -245,13 +249,11 @@ export default function App() {
     setIsSending(true);
     setAppError(null);
     try {
-      // FIX: Versuche Re-Init, falls db noch nicht bereit ist
-      if (!db || !auth) {
-          const success = initFirebase();
-          if (!success) throw new Error("Firebase konnte nicht initialisiert werden. Bitte Konfiguration prüfen.");
-      }
+      // FIX: Sicherstellen, dass die Datenbank bereit ist (Regel 3)
+      const success = initFirebase();
+      if (!success) throw new Error("Firebase konnte nicht initialisiert werden. Bitte Konfiguration prüfen.");
       
-      // FIX: Sicherstellen, dass wir angemeldet sind (Regel 3)
+      // FIX: Authentifizierung vor dem Schreibvorgang sicherstellen (Regel 3)
       if (!auth.currentUser) {
           if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
@@ -335,8 +337,8 @@ export default function App() {
     if (params.get('view') === 'client') setAppMode('client');
     
     const startAuth = async () => {
-        initFirebase();
-        if (auth) {
+        const success = initFirebase();
+        if (success && auth) {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
