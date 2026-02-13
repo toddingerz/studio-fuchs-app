@@ -24,27 +24,25 @@ import {
 // =================================================================
 
 let app, auth, db;
-// FIX: Bereinigung der appId für Firebase (Slashes in Unterstriche umwandeln)
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
+// Pfad-Bereinigung für Firebase
 const appId = rawAppId.replace(/\//g, '_');
 
 try {
-  // Versucht Config zu lesen, ignoriert Fehler im Build/Preview
-  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-  const firebaseConfig = JSON.parse(configStr);
-  
-  if (Object.keys(firebaseConfig).length > 0) {
-      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-      auth = getAuth(app);
-      db = getFirestore(app);
+  const firebaseConfig = JSON.parse(__firebase_config);
+  if (!getApps().length) {
+      app = initializeApp(firebaseConfig);
+  } else {
+      app = getApp();
   }
+  auth = getAuth(app);
+  db = getFirestore(app);
 } catch (e) {
   console.warn("Firebase Init skipped", e);
 }
 
-// PROXY URL (Vercel Backend)
-const PROXY_URL = "/api/gemini"; 
 const ADMIN_PIN = "1704"; 
+const PROXY_URL = "/api/gemini"; 
 
 // =================================================================
 // DATEN
@@ -97,8 +95,8 @@ export default function App() {
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
-
-  // Workspace
+  
+  // Workspace Data
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -128,6 +126,8 @@ export default function App() {
   const [clientCategory, setClientCategory] = useState(null);
   const [clientSubmitted, setClientSubmitted] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  
+  // Audio State
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -145,7 +145,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'client') setAppMode('client');
     if (auth) {
-        const init = async () => {
+        const initAuth = async () => {
             try {
                 if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
                     await signInWithCustomToken(auth, window.__initial_auth_token);
@@ -154,8 +154,8 @@ export default function App() {
                 }
             } catch (e) { console.error("Auth Error", e); }
         };
-        init();
-        return onAuthStateChanged(auth, u => setUser(u));
+        initAuth();
+        return onAuthStateChanged(auth, (u) => setUser(u));
     }
   }, []);
 
@@ -167,6 +167,8 @@ export default function App() {
       const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      }, (err) => {
+        console.error("Firestore Listen Error", err);
       });
       return () => unsubscribe();
     } catch (err) { console.error("Firestore Error", err); }
@@ -199,21 +201,25 @@ export default function App() {
     return cleaned;
   };
 
+  // --- API CALL ---
   const callAI = async (payload) => {
     try {
         const response = await fetch(PROXY_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            // FIX: "payload" property entfernt und payload direkt gespreaded
             body: JSON.stringify({ 
               model: "gemini-2.5-flash-preview-09-2025", 
-              ...payload // Flattened payload for backend compatibility
+              ...payload 
             })
         });
         
-        if (response.status === 404) throw new Error("Backend API nicht gefunden.");
-        
         const data = await response.json();
-        if (!response.ok) throw new Error(data.message || data.error || "Server Fehler");
+        
+        if (!response.ok) {
+            const errorMsg = data.message || data.error?.message || `Server Fehler: ${response.status}`;
+            throw new Error(String(errorMsg));
+        }
         
         return data;
     } catch (e) {
@@ -228,11 +234,13 @@ export default function App() {
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
+        // FIX: Bereinigter MIME-Type für Google
         const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
+        
         const data = await callAI({ 
           contents: [{ 
             parts: [
-              { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch." }, 
+              { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, 
               { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }
             ] 
           }] 
@@ -247,20 +255,23 @@ export default function App() {
   const startRecording = async () => {
     setAppError(null);
     try {
+      if (!navigator.mediaDevices) throw new Error("Kein Mikrofon-Zugriff.");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContextRef.current = new AudioContext();
+      
+      // Visualizer
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContextRef.current.createMediaStreamSource(stream);
       analyserRef.current = audioContextRef.current.createAnalyser();
       source.connect(analyserRef.current);
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-      const update = () => {
+      const updateVisualizer = () => {
         if(!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
         setAudioLevel(dataArray.reduce((a, b) => a + b) / dataArray.length);
-        animationFrameRef.current = requestAnimationFrame(update);
+        animationFrameRef.current = requestAnimationFrame(updateVisualizer);
       };
-      update();
-      
+      updateVisualizer();
+
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
       mediaRecorderRef.current.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
@@ -270,26 +281,31 @@ export default function App() {
         stream.getTracks().forEach(t => t.stop());
       };
       mediaRecorderRef.current.start();
-      setIsRecording(true); setIsPaused(false);
-    } catch (err) { setAppError("Mikrofon-Zugriff nicht möglich."); }
+      setIsRecording(true); 
+      setIsPaused(false);
+    } catch (err) { setAppError("Mikrofonfehler: " + String(err.message)); }
   };
   
   const togglePause = () => {
+      // Pause-Logik für Segmentierte Aufnahme
       if (!mediaRecorderRef.current) return;
       if (!isPaused) { 
-          mediaRecorderRef.current.pause(); 
+          // Stop current segment -> Transcribe
+          mediaRecorderRef.current.stop(); 
           setIsPaused(true); 
           setAudioLevel(0);
-      } 
-      else { 
-          mediaRecorderRef.current.resume(); 
-          setIsPaused(false); 
+      } else { 
+          // Start new segment
+          startRecording(); 
       }
   };
   
   const stopRecording = () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
-      setIsRecording(false); setIsPaused(false);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+      }
+      setIsRecording(false);
+      setIsPaused(false);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       if (audioContextRef.current) audioContextRef.current.close();
   };
@@ -310,7 +326,7 @@ export default function App() {
 
   const loadSubmission = (sub) => {
     setTranscript(sub.text || "");
-    if (sub.category) {
+    if (sub.category) { 
         if (sub.category === "Nicht sicher") setSelectedCategory(null);
         else { const found = CATEGORIES.find(c => c.label === sub.category); setSelectedCategory(found || null); }
     }
@@ -327,29 +343,18 @@ export default function App() {
     try {
       const payload = {
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Firmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}\nInput: ${transcript}` }] }],
+        contents: [{ parts: [{ text: `Firmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}\nSocial: ${socialUrl}\nInput: ${transcript}` }] }],
         generationConfig: { responseMimeType: "application/json" }
       };
       const data = await callAI(payload);
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
       setStep(4);
-    } catch (err) { setAppError(String(err.message)); setStep(2); }
+    } catch (err) { 
+        setAppError(String(err.message)); 
+        setStep(2); 
+    }
     finally { setIsGenerating(false); }
-  };
-
-  const generateStrategy = async () => {
-    setIsGeneratingStrategy(true);
-    try {
-      const payload = {
-        systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
-      };
-      const data = await callAI(payload);
-      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
-      setStrategyReport(String(res.report));
-    } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
-    finally { setIsGeneratingStrategy(false); }
   };
 
   const generateHooks = async () => {
@@ -367,6 +372,21 @@ export default function App() {
     finally { setIsGeneratingHooks(false); }
   };
 
+  const generateStrategy = async () => {
+    setIsGeneratingStrategy(true);
+    try {
+      const payload = {
+        systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nFirma: ${clientCompany}\nGröße: ${companySize}\nBereich: ${selectedCategory?.label}\nWebsite: ${websiteUrl}\nInterview: ${transcript}` }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { report: { type: "STRING" } } } }
+      };
+      const data = await callAI(payload);
+      const jsonResponse = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      setStrategyReport(String(jsonResponse.report));
+    } catch (err) { setAppError("Strategie-Fehler: " + String(err.message)); } 
+    finally { setIsGeneratingStrategy(false); }
+  };
+
   // --- RENDER ---
   
   if (appMode === 'select') {
@@ -374,7 +394,7 @@ export default function App() {
       <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
         <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
           <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-3">Designstudio <span className="text-[#e32338]">Fuchs</span></h1>
-          <p className="opacity-60 font-medium text-lg tracking-wide uppercase text-[12px]">Brand Intelligence System</p>
+          <p className="opacity-60 font-medium text-lg uppercase tracking-widest text-[12px]">Brand Intelligence System</p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl w-full">
           <button onClick={() => setAppMode('client')} className="group bg-white/70 backdrop-blur-md hover:bg-white p-16 rounded-[4rem] text-center shadow-xl transition-all duration-300">
@@ -413,83 +433,85 @@ export default function App() {
     );
   }
 
-  if (appMode === 'client') return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
-      <header className="px-8 h-24 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md">
-        <div className="font-bold text-2xl">Designstudio<span className="text-[#e32338]">Fuchs</span></div>
-        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full transition-all">Abbrechen</button>
-      </header>
-      <main className="max-w-6xl mx-auto px-8 py-16">
-        {clientSubmitted ? (
-          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
-            <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
-            <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
-            <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Zur Startseite</button>
-          </div>
-        ) : (
-          <>
-            <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-              <div className="lg:col-span-5">
-                <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
-                  <h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5" /> Leitfragen</h3>
-                  <div className="space-y-6">
-                    {INTERVIEW_QUESTIONS.map(q => (
-                      <div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm mb-1">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="lg:col-span-7 space-y-8">
-                <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-8">
-                  <div className="grid grid-cols-2 gap-4">
-                    <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                    <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Teamgröße</label>
-                    <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">In welchem Bereich bist du tätig?</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
-                      <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
-                </div>
-                <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
-                  <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
-                    {!isRecording ? (
-                      <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all transform hover:scale-105 active:scale-95"><Mic className="w-6 h-6" /> Aufnahme starten</button>
-                    ) : (
-                      <div className="flex flex-col items-center gap-4 w-full">
-                        <div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338] transition-all" style={{ width: `${Math.min(100, audioLevel * 2)}%` }} /></div>
-                        <div className="flex gap-4">
-                          <button onClick={togglePause} className={`flex items-center gap-3 px-8 py-5 text-white rounded-full font-bold uppercase text-[10px] shadow-lg transition-all ${isPaused ? 'bg-emerald-500' : 'bg-amber-500'}`}>{isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />} {isPaused ? "Weiter" : "Pause"}</button>
-                          <button onClick={stopRecording} className="flex items-center gap-3 px-8 py-5 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px] shadow-lg"><Square className="w-4 h-4" /></button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest">KI schreibt Nachricht...</p></div>}
-                  <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
-                  <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
-                    <button onClick={handleClientSubmit} disabled={isSending || !transcript || !clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all">
-                      {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Absenden</>}
-                    </button>
-                  </div>
+  if (appMode === 'client') {
+    if (clientSubmitted) return (
+      <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-center text-[#2c233e]">
+        <div className="bg-white/60 backdrop-blur-xl p-16 rounded-[4rem] max-w-xl shadow-2xl border border-white/60">
+          <Check className="w-16 h-16 text-[#e32338] mx-auto mb-8" />
+          <h2 className="text-4xl font-bold mb-6">Erfolgreich!</h2>
+          <p className="text-xl opacity-70 mb-10">Deine Daten sind sicher übermittelt. Wir melden uns!</p>
+          {!isMagicLink && <button onClick={() => { setAppMode('select'); setClientSubmitted(false); }} className="px-10 py-4 bg-[#2c233e] text-white font-bold rounded-full text-sm uppercase tracking-widest">Startseite</button>}
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans selection:bg-[#e32338]/20">
+        <header className="px-8 h-24 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md">
+          <div className="font-bold text-2xl">Designstudio<span className="text-[#e32338]">Fuchs</span></div>
+          {!isMagicLink && <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full transition-all">Abbrechen</button>}
+        </header>
+        <main className="max-w-6xl mx-auto px-8 py-16 animate-in fade-in duration-700">
+          <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
+          {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+            <div className="lg:col-span-5">
+              <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
+                <h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5" /> Leitfragen</h3>
+                <div className="space-y-6">
+                  {INTERVIEW_QUESTIONS.map(q => (
+                    <div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm mb-1">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>
+                  ))}
                 </div>
               </div>
             </div>
-          </>
-        )}
-      </main>
-    </div>
-  );
+            <div className="lg:col-span-7 space-y-8">
+              <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-8">
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
+                  <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
+                </div>
+                <div className="space-y-4">
+                  <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Teamgröße</label>
+                  <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
+                </div>
+                <div className="space-y-4">
+                  <label className="text-[10px] font-bold uppercase opacity-40 ml-2">In welchem Bereich bist du tätig?</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
+                    <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
+              </div>
+              <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
+                <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
+                  {!isRecording ? (
+                    <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all transform hover:scale-105 active:scale-95"><Mic className="w-6 h-6" /> Aufnahme starten</button>
+                  ) : (
+                    <div className="flex flex-col items-center gap-4 w-full">
+                      <div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338] transition-all" style={{ width: `${Math.min(100, audioLevel * 2)}%` }} /></div>
+                      <div className="flex gap-4">
+                        <button onClick={togglePause} className={`flex items-center gap-3 px-8 py-5 text-white rounded-full font-bold uppercase text-[10px] shadow-lg transition-all ${isPaused ? 'bg-emerald-500' : 'bg-amber-500'}`}>{isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />} {isPaused ? "Weiter" : "Pause"}</button>
+                        <button onClick={stopRecording} className="flex items-center gap-3 px-8 py-5 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px] shadow-lg"><Square className="w-4 h-4" /></button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest">KI schreibt Nachricht...</p></div>}
+                <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
+                <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
+                  <button onClick={handleClientSubmit} disabled={isSending || !transcript || !clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all">
+                    {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Absenden</>}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   // --- AGENCY DASHBOARD ---
   return (
@@ -551,19 +573,16 @@ export default function App() {
           <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
             <div className="flex justify-between items-center">
               <h1 className="text-4xl font-bold">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
-              <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
+              <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copyToClipboard(JSON.stringify(outputJson, null, 2))} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
             </div>
             {/* STRATEGIE REPORT CARD */}
             <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={handleStrategyAnalyse} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
-              {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
+              {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copyToClipboard(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
             </div>
             {/* JSON BOX */}
             <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/10"><span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/40" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
-            <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit">
-                 <h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>
-                 {!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-medium relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{String(h)}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}
-            </div>
+            <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit"><h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>{!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-medium relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{String(h)}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}</div>
           </div>
         )}
       </main>
