@@ -13,9 +13,10 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { 
-  ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
+  ChevronRight, ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
   Sparkles, HelpCircle, Lightbulb, Globe, Mic, Send, Briefcase, Inbox, ArrowRight, Square, 
-  UploadCloud, Lock, Unlock, FileText, Pause, Play, Trash2, AlertCircle, Users, LayoutGrid
+  UploadCloud, Share2, Lock, Unlock, MousePointerClick, FileText, Pause, Play, Trash2, 
+  AlertCircle, Users, LayoutGrid
 } from 'lucide-react';
 
 // =================================================================
@@ -23,21 +24,27 @@ import {
 // =================================================================
 
 let app, auth, db;
-// FIX: appId bereinigen, um Pfad-Segment-Fehler in Firebase zu verhindern
+// FIX: Bereinigung der appId für Firebase (Slashes in Unterstriche umwandeln)
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
 const appId = rawAppId.replace(/\//g, '_');
 
 try {
-  const firebaseConfig = JSON.parse(__firebase_config);
-  app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-  auth = getAuth(app);
-  db = getFirestore(app);
+  // Versucht Config zu lesen, ignoriert Fehler im Build/Preview
+  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+  const firebaseConfig = JSON.parse(configStr);
+  
+  if (Object.keys(firebaseConfig).length > 0) {
+      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+      auth = getAuth(app);
+      db = getFirestore(app);
+  }
 } catch (e) {
   console.warn("Firebase Init skipped", e);
 }
 
-const ADMIN_PIN = "1704"; 
+// PROXY URL (Vercel Backend)
 const PROXY_URL = "/api/gemini"; 
+const ADMIN_PIN = "1704"; 
 
 // =================================================================
 // DATEN
@@ -67,18 +74,25 @@ const INTERVIEW_QUESTIONS = [
 // PROMPTS
 // =================================================================
 
-const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Rohtext, Firmengröße und Web-Daten eine präzise Marken-Identität nach dem Base44-Standard. Gib AUSSCHLIESSLICH valides JSON aus. Keine Erklärungen.`;
-const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, spezialisierter Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse. Antworte im JSON Format mit einem Feld "report".`;
+const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. 
+Aufgabe: Extrahiere aus Input eine präzise Marken-Identität nach Base44.
+Format: REINES JSON. Keine Markdown-Formatierung.
+Felder: story_core, story_dna, brand_voice_rules, tone_tags, no_go_tags, audiences, goals_top3, content_themes, content_formats, local_focus, proof_points, category, inference_notes.`;
+
+const STRATEGY_SYSTEM_INSTRUCTION = `
+Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse.
+Struktur: 1. Cliffhanger-Betreff (A/B), 2. Hyperpersonalisierter Einstieg, 3. Pain/Potenzial, 4. Storybased Lösung, 5. Nutzen, 6. CTA.
+Tonalität: Kurz, präzise, CEO-tauglich.
+Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
-// APP
+// APP COMPONENT
 // =================================================================
 
 export default function App() {
   const [appMode, setAppMode] = useState('select'); 
   const [user, setUser] = useState(null);
   const [submissions, setSubmissions] = useState([]);
-  const [isMagicLink, setIsMagicLink] = useState(false);
   const [activeClientName, setActiveClientName] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
@@ -109,6 +123,8 @@ export default function App() {
   // Client Input
   const [clientName, setClientName] = useState("");
   const [clientCompany, setClientCompany] = useState("");
+  const [clientWebsite, setClientWebsite] = useState("");
+  const [clientSocial, setClientSocial] = useState("");
   const [clientCategory, setClientCategory] = useState(null);
   const [clientSubmitted, setClientSubmitted] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -122,16 +138,14 @@ export default function App() {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // --- INITIALISIERUNG ---
+  // 1. Auth & Init
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') {
-      setAppMode('client');
-      setIsMagicLink(true);
-    }
+    if (params.get('view') === 'client') setAppMode('client');
     if (auth) {
-        const initAuth = async () => {
+        const init = async () => {
             try {
                 if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
                     await signInWithCustomToken(auth, window.__initial_auth_token);
@@ -140,12 +154,12 @@ export default function App() {
                 }
             } catch (e) { console.error("Auth Error", e); }
         };
-        initAuth();
-        return onAuthStateChanged(auth, (u) => setUser(u));
+        init();
+        return onAuthStateChanged(auth, u => setUser(u));
     }
   }, []);
 
-  // --- FIRESTORE SYNC ---
+  // 2. Fetch Data
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
     try {
@@ -153,12 +167,10 @@ export default function App() {
       const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-      }, (err) => {
-        setAppError("Datenbank-Zugriff verweigert.");
       });
       return () => unsubscribe();
     } catch (err) { console.error("Firestore Error", err); }
-  }, [user, isAdminLoggedIn, appId]);
+  }, [user, isAdminLoggedIn]);
 
   // --- HELPER ---
   const copySimpleText = (text, callback) => {
@@ -194,44 +206,40 @@ export default function App() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
               model: "gemini-2.5-flash-preview-09-2025", 
-              payload: payload 
+              ...payload // Flattened payload for backend compatibility
             })
         });
         
+        if (response.status === 404) throw new Error("Backend API nicht gefunden.");
+        
         const data = await response.json();
-        if (!response.ok) {
-            const errorMessage = data.message || data.error || "Server Fehler";
-            throw new Error(typeof errorMessage === 'object' ? JSON.stringify(errorMessage) : errorMessage);
-        }
+        if (!response.ok) throw new Error(data.message || data.error || "Server Fehler");
+        
         return data;
     } catch (e) {
         throw e;
     }
   };
 
-  // --- AUDIO LOGIC ---
+  // --- LOGIC ---
   const processAudio = async (blob) => {
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
-        // FIX: Clean MIME type (stripping codecs) to avoid 400 error from Google API
         const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
-        
         const data = await callAI({ 
           contents: [{ 
             parts: [
-              { text: "Transkribiere dieses Audio auf Deutsch." }, 
+              { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch." }, 
               { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }
             ] 
           }] 
         });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
-      } catch (err) { 
-        setAppError("Transkription fehlgeschlagen: " + String(err.message)); 
-      }
+      } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
       finally { setIsTranscribing(false); }
     };
   };
@@ -255,7 +263,7 @@ export default function App() {
       
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
+      mediaRecorderRef.current.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
         processAudio(blob);
@@ -268,8 +276,15 @@ export default function App() {
   
   const togglePause = () => {
       if (!mediaRecorderRef.current) return;
-      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); setAudioLevel(0); } 
-      else { mediaRecorderRef.current.resume(); setIsPaused(false); }
+      if (!isPaused) { 
+          mediaRecorderRef.current.pause(); 
+          setIsPaused(true); 
+          setAudioLevel(0);
+      } 
+      else { 
+          mediaRecorderRef.current.resume(); 
+          setIsPaused(false); 
+      }
   };
   
   const stopRecording = () => {
@@ -293,7 +308,7 @@ export default function App() {
     finally { setIsSending(false); }
   };
 
-  const loadFromInbox = (sub) => {
+  const loadSubmission = (sub) => {
     setTranscript(sub.text || "");
     if (sub.category) {
         if (sub.category === "Nicht sicher") setSelectedCategory(null);
@@ -303,18 +318,19 @@ export default function App() {
     setActiveClientName(String(sub.name || "Gast"));
     setWebsiteUrl(sub.website || "");
     setSocialUrl(sub.social || "");
-    setStep(2); 
+    setStep(2);
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
-  const handleDNAAnalyse = async () => {
+  const generateDNA = async () => {
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
-      const data = await callAI({
+      const payload = {
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
+        contents: [{ parts: [{ text: `Firmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}\nInput: ${transcript}` }] }],
         generationConfig: { responseMimeType: "application/json" }
-      });
+      };
+      const data = await callAI(payload);
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
       setStep(4);
@@ -322,60 +338,80 @@ export default function App() {
     finally { setIsGenerating(false); }
   };
 
-  const handleStrategyAnalyse = async () => {
+  const generateStrategy = async () => {
     setIsGeneratingStrategy(true);
     try {
-      const data = await callAI({
+      const payload = {
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
-      });
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
+      };
+      const data = await callAI(payload);
       const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
       setStrategyReport(String(res.report));
     } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
     finally { setIsGeneratingStrategy(false); }
   };
 
-  // --- UI RENDER ---
-  
-  if (appMode === 'select') return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
-      <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
-        <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-3">Designstudio <span className="text-[#e32338]">Fuchs</span></h1>
-        <p className="opacity-60 font-medium text-lg uppercase tracking-widest text-[12px]">Brand Intelligence System</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl w-full">
-        <button onClick={() => setAppMode('client')} className="group bg-white/70 backdrop-blur-md hover:bg-white p-16 rounded-[4rem] text-center shadow-xl transition-all duration-300">
-          <div className="w-24 h-24 rounded-full bg-[#e32338]/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><User className="w-10 h-10 text-[#e32338]" /></div>
-          <h2 className="text-3xl font-bold mb-3">Kunden-Portal</h2>
-          <p className="opacity-60 font-medium text-sm">Briefing & Daten übermitteln.</p>
-        </button>
-        <button onClick={() => setAppMode('login')} className="group bg-[#2c233e]/90 p-16 rounded-[4rem] text-center shadow-2xl transition-all duration-300 text-white">
-          <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><Briefcase className="w-10 h-10 text-white" /></div>
-          <h2 className="text-3xl font-bold mb-3">Agentur-Dashboard</h2>
-          <p className="opacity-40 font-medium text-sm">Analyse & Base44 Export.</p>
-        </button>
-      </div>
-    </div>
-  );
+  const generateHooks = async () => {
+    setIsGeneratingHooks(true);
+    try {
+      const payload = {
+        systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
+        contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
+      };
+      const data = await callAI(payload);
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      setSocialHooks(JSON.parse(cleanJsonResponse(raw)));
+    } catch (err) { console.error(err); }
+    finally { setIsGeneratingHooks(false); }
+  };
 
-  if (appMode === 'login') return (
-    <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
-      <form onSubmit={(e) => { 
+  // --- RENDER ---
+  
+  if (appMode === 'select') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
+        <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-3">Designstudio <span className="text-[#e32338]">Fuchs</span></h1>
+          <p className="opacity-60 font-medium text-lg tracking-wide uppercase text-[12px]">Brand Intelligence System</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl w-full">
+          <button onClick={() => setAppMode('client')} className="group bg-white/70 backdrop-blur-md hover:bg-white p-16 rounded-[4rem] text-center shadow-xl transition-all duration-300">
+            <div className="w-24 h-24 rounded-full bg-[#e32338]/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><User className="w-10 h-10 text-[#e32338]" /></div>
+            <h2 className="text-3xl font-bold mb-3">Kunden-Portal</h2>
+            <p className="opacity-60 font-medium text-sm">Briefing & Daten übermitteln.</p>
+          </button>
+          <button onClick={() => setAppMode('login')} className="group bg-[#2c233e]/90 p-16 rounded-[4rem] text-center shadow-2xl transition-all duration-300 text-white">
+            <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><Briefcase className="w-10 h-10 text-white" /></div>
+            <h2 className="text-3xl font-bold mb-3">Agentur-Dashboard</h2>
+            <p className="opacity-40 font-medium text-sm">Analyse, Base44 & Strategie.</p>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (appMode === 'login') {
+    return (
+      <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
+        <form onSubmit={(e) => { 
           e.preventDefault(); 
           if(pinInput === ADMIN_PIN) {
-              setIsAdminLoggedIn(true);
-              setAppMode('agency'); 
+            setIsAdminLoggedIn(true);
+            setAppMode('agency'); 
           } else {
-              setLoginError(true);
+            setLoginError(true);
           }
-      }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
-        <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
-        <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
-        {loginError && <p className="text-[#e32338] font-bold mb-4">PIN falsch!</p>}
-        <div className="flex gap-4"><button type="button" onClick={() => setAppMode('select')} className="flex-1 opacity-40 font-bold uppercase text-xs">Abbruch</button><button type="submit" className="flex-1 bg-[#e32338] py-4 rounded-2xl font-bold uppercase text-xs">Login</button></div>
-      </form>
-    </div>
-  );
+        }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
+          <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
+          <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
+          {loginError && <p className="text-[#e32338] font-bold mb-4">PIN falsch!</p>}
+          <div className="flex gap-4"><button type="button" onClick={() => setAppMode('select')} className="flex-1 opacity-40 font-bold uppercase text-xs">Abbruch</button><button type="submit" className="flex-1 bg-[#e32338] py-4 rounded-2xl font-bold uppercase text-xs">Login</button></div>
+        </form>
+      </div>
+    );
+  }
 
   if (appMode === 'client') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
@@ -388,8 +424,8 @@ export default function App() {
           <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
             <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
-            <p className="text-xl opacity-60 mb-10">Daten wurden sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Startseite</button>
+            <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
+            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Zur Startseite</button>
           </div>
         ) : (
           <>
@@ -524,6 +560,10 @@ export default function App() {
             </div>
             {/* JSON BOX */}
             <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/10"><span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/40" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
+            <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit">
+                 <h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>
+                 {!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-medium relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{String(h)}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}
+            </div>
           </div>
         )}
       </main>
