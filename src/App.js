@@ -3,8 +3,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  onAuthStateChanged, 
-  signInWithCustomToken
+  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -13,42 +12,40 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { 
-  ChevronRight, ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
+  ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
   Sparkles, HelpCircle, Lightbulb, Globe, Mic, Send, Briefcase, Inbox, ArrowRight, Square, 
-  UploadCloud, Share2, Lock, Unlock, MousePointerClick, FileText, Pause, Play, Trash2, 
-  AlertCircle, Users, LayoutGrid
+  UploadCloud, Lock, Unlock, FileText, Pause, Play, Trash2, AlertCircle, Users, LayoutGrid
 } from 'lucide-react';
 
 // =================================================================
-// 1. STABILE FIREBASE CONFIG (VERCEL READY)
+// 1. STABILE FIREBASE CONFIG (VERCEL & LOCAL)
 // =================================================================
 
-// Wir nutzen hier die feste Konfiguration, damit db NIEMALS undefined ist.
 const firebaseConfig = {
   apiKey: "AIzaSyCd9YnXBiLct5RFgqqDCnvIODV5dVtKkmI",
   authDomain: "studio-fuchs.firebaseapp.com",
   projectId: "studio-fuchs",
   storageBucket: "studio-fuchs.firebasestorage.app",
   messagingSenderId: "743239245515",
-  appId: "1:743239245515:web:b32ec9724c0dcc853b454e"
+  appId: "1:743239245515:web:b32ec9724c0dcc853b454e",
+  measurementId: "G-SNL32ZC6S2"
 };
 
-// Konstante App-ID für konsistente Pfade (keine __app_id mehr)
-const appId = "brand-dna-studio-fuchs-live";
+const appId = "brand-dna-studio-fuchs-live"; // Feste App ID für konsistente Pfade
 
-// Initialisierung SOFORT ausführen (nicht erst im Render-Zyklus)
+// Initialisierung (Singleton Pattern)
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Debug Log beim Start
-console.log("Firebase init ok", { hasDb: !!db, projectId: firebaseConfig.projectId });
+// Debug Log (nur einmalig)
+console.log("Firebase initialized:", { dbReady: !!db, authReady: !!auth, projectId: firebaseConfig.projectId });
 
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
 
 // =================================================================
-// DATEN
+// DATEN & PROMPTS
 // =================================================================
 
 const COMPANY_SIZES = ["Nur ich (Solo)", "1-5 Mitarbeiter", "6-20 Mitarbeiter", "21-100 Mitarbeiter", "Über 100 Mitarbeiter"];
@@ -81,7 +78,7 @@ const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuch
 export default function App() {
   const [appMode, setAppMode] = useState('select'); 
   const [user, setUser] = useState(null);
-  const [authReady, setAuthReady] = useState(false); // NEU: Warten auf Auth
+  const [authReady, setAuthReady] = useState(false);
   const [submissions, setSubmissions] = useState([]);
   const [activeClientName, setActiveClientName] = useState(null);
   const [pinInput, setPinInput] = useState("");
@@ -96,12 +93,15 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
-  // Status
+  // Status & Locking
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
+  
+  // KI Request Lock
+  const aiRequestLock = useRef(false); 
 
   // Results
   const [outputJson, setOutputJson] = useState(null);
@@ -127,30 +127,22 @@ export default function App() {
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
 
-  // --- 1. AUTH INITIALISIERUNG ---
+  // --- 1. AUTH LOGIK ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'client') setAppMode('client');
 
-    // Sofortiger Anmeldeversuch
-    const initAuth = async () => {
-      try {
-        if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-          await signInWithCustomToken(auth, window.__initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (e) {
-        console.error("Auth Failure:", e);
-      }
-    };
-    initAuth();
-
-    // Listener setzt authReady auf true, sobald wir einen User haben (oder null, aber Init fertig ist)
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-        setUser(u);
-        setAuthReady(true);
-        console.log("Auth Ready:", !!u);
+        if (u) {
+            setUser(u);
+            setAuthReady(true);
+        } else {
+            // Wenn nicht eingeloggt, anonym anmelden
+            signInAnonymously(auth).catch(err => {
+                console.error("Anon Auth failed:", err);
+                setAppError("Anmeldung fehlgeschlagen. Bitte neu laden.");
+            });
+        }
     });
     return () => unsubscribe();
   }, []);
@@ -158,38 +150,77 @@ export default function App() {
   // --- 2. FIRESTORE SYNC ---
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
-    
-    // Pfad: /artifacts/brand-dna-studio-fuchs-live/public/data/submissions
-    const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-    
-    const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-    }, (err) => {
-      console.error("Firestore Error:", err);
-      // Kein UI-Error hier, um User nicht zu verwirren, falls nur Permissions fehlen
-    });
-    
-    return () => unsubscribe();
+    try {
+      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
+      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setSubmissions(data.sort((a, b) => b.timestamp - a.timestamp));
+      }, (err) => {
+        console.error("Firestore Read Error:", err);
+      });
+      return () => unsubscribe();
+    } catch (err) { console.error("Firestore Init Error", err); }
   }, [user, isAdminLoggedIn]);
 
-  // --- API & HELPERS ---
-  const copySimpleText = (text, callback) => {
-    if (!text) return;
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    document.body.appendChild(textArea);
-    textArea.select();
-    try { document.execCommand('copy'); if(callback) callback(); } catch (err) {}
-    document.body.removeChild(textArea);
+  // --- API CALL (MIT BACKOFF & LOCK) ---
+  const callAI = async (payload, maxRetries = 5) => {
+    if (aiRequestLock.current) {
+        throw new Error("Bitte warten, eine Anfrage läuft bereits.");
+    }
+    aiRequestLock.current = true;
+
+    const delays = [1000, 2000, 4000, 8000, 16000];
+
+    try {
+        for (let i = 0; i <= maxRetries; i++) {
+            try {
+                // Relativer Pfad für Vercel (Online)
+                const res = await fetch(PROXY_URL, {
+                    method: "POST", 
+                    headers: { "Content-Type": "application/json" },
+                    // Flache Struktur für das Backend
+                    body: JSON.stringify({ 
+                        model: "gemini-2.5-flash-preview-09-2025", 
+                        ...payload 
+                    })
+                });
+
+                if (res.status === 429) {
+                    if (i < maxRetries) {
+                        await new Promise(r => setTimeout(r, delays[i]));
+                        continue;
+                    } else {
+                        throw new Error("Server überlastet (429). Bitte später versuchen.");
+                    }
+                }
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(String(err.message || err.error || `Fehler: ${res.status}`));
+                }
+
+                return await res.json();
+            } catch (innerError) {
+                if (i === maxRetries) throw innerError;
+                await new Promise(r => setTimeout(r, delays[i]));
+            }
+        }
+    } finally {
+        aiRequestLock.current = false;
+    }
   };
 
+  // --- ACTIONS ---
+  
+  const copySimpleText = (text, callback) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => { if(callback) callback(); });
+  };
+  
   const copyMagicLink = () => {
     const url = window.location.href.split('?')[0] + '?view=client';
-    copySimpleText(url, () => {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    });
+    navigator.clipboard.writeText(url);
+    setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
   };
 
   const cleanJsonResponse = (rawText) => {
@@ -200,48 +231,29 @@ export default function App() {
     return cleaned;
   };
 
-  const callAI = async (payload, maxRetries = 7) => {
-    const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            const res = await fetch(PROXY_URL, {
-                method: "POST", 
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
-            });
-            if (res.status === 429 && i < maxRetries - 1) {
-                await new Promise(r => setTimeout(r, delays[i]));
-                continue;
-            }
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(String(err.message || err.error || `Server Fehler: ${res.status}`));
-            }
-            return await res.json();
-        } catch (error) {
-            if (i === maxRetries - 1) throw error;
-            await new Promise(r => setTimeout(r, delays[i]));
-        }
-    }
-  };
-
   const processAudio = async (blob) => {
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
-        const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
-        const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }] }] });
+        const cleanMime = blob.type.split(';')[0] || 'audio/webm';
+        const data = await callAI({ 
+            contents: [{ 
+                parts: [
+                    { text: "Transkribiere dieses Audio auf Deutsch." }, 
+                    { inlineData: { mimeType: cleanMime, data: reader.result.split(',')[1] } }
+                ] 
+            }] 
+        });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n" + text : text);
-      } catch (err) { setAppError("Transkription fehlgeschlagen."); }
+      } catch (err) { setAppError(String(err.message)); }
       finally { setIsTranscribing(false); }
     };
   };
 
   const startRecording = async () => {
-    setAppError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioContextRef.current = new AudioContext();
@@ -252,13 +264,13 @@ export default function App() {
       const update = () => {
         if(!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
-        setAudioLevel(dataArray.reduce((a, b) => a + b) / dataArray.length);
+        setAudioLevel(dataArray.reduce((a,b)=>a+b)/dataArray.length);
         animationFrameRef.current = requestAnimationFrame(update);
       };
       update();
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
+      mediaRecorderRef.current.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
         processAudio(blob);
@@ -266,12 +278,12 @@ export default function App() {
       };
       mediaRecorderRef.current.start();
       setIsRecording(true); setIsPaused(false);
-    } catch (err) { setAppError("Mikrofon-Zugriff nicht möglich."); }
+    } catch (e) { setAppError("Mikrofon Fehler"); }
   };
-  
+
   const togglePause = () => {
-      if (!mediaRecorderRef.current) return;
-      if (!isPaused) { 
+      if(!mediaRecorderRef.current) return;
+      if(!isPaused) { 
         mediaRecorderRef.current.stop(); 
         setIsPaused(true); 
         setAudioLevel(0);
@@ -280,23 +292,19 @@ export default function App() {
         setIsPaused(false); 
       }
   };
-  
+
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    setIsRecording(false);
-    setIsPaused(false);
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      if(mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
+      setIsRecording(false); setIsPaused(false);
+      if(animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
   };
 
-  // --- SUBMIT LOGIK (Stabilisiert) ---
   const handleClientSubmit = async () => {
     if (!clientName.trim() || !transcript.trim()) return;
     
-    // Harte Prüfung: Ist DB da? Ist User da?
-    if (!db) { setAppError("Datenbank nicht initialisiert (db fehlt)."); return; }
-    if (!user) { setAppError("Nicht eingeloggt (Auth fehlt)."); return; }
+    // Harte Validierung
+    if (!db) { setAppError("Interner Fehler: Datenbank nicht initialisiert."); return; }
+    if (!authReady || !user) { setAppError("Verbindung wird noch hergestellt..."); return; }
 
     setIsSending(true);
     setAppError(null);
@@ -306,14 +314,10 @@ export default function App() {
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
       });
       setClientSubmitted(true);
-    } catch (err) { 
-        console.error("Submit Error:", err);
-        setAppError("Senden fehlgeschlagen: " + String(err.message)); 
-    }
+    } catch (err) { setAppError("Speichern fehlgeschlagen: " + String(err.message)); }
     finally { setIsSending(false); }
   };
 
-  // --- WORKFLOW LOGIK ---
   const loadSubmission = (sub) => {
     setTranscript(sub.text || "");
     if (sub.category) { 
@@ -328,22 +332,24 @@ export default function App() {
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
-  const handleDNAAnalyse = async () => {
+  const generateDNA = async () => {
+    if (isGenerating) return;
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
       const data = await callAI({
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
+        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}` }] }],
         generationConfig: { responseMimeType: "application/json" }
       });
-      const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      setOutputJson(JSON.parse(cleanJsonResponse(rawJson)));
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
       setStep(4);
-    } catch (err) { setAppError(String(err.message)); setStep(2); } 
+    } catch (e) { setAppError(String(e.message)); setStep(2); }
     finally { setIsGenerating(false); }
   };
 
-  const handleStrategyAnalyse = async () => {
+  const generateStrategy = async () => {
+    if (isGeneratingStrategy) return;
     setIsGeneratingStrategy(true);
     try {
       const data = await callAI({
@@ -352,11 +358,12 @@ export default function App() {
       });
       const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
       setStrategyReport(String(res.report));
-    } catch (err) { setAppError("Bericht Fehler."); }
+    } catch (e) { setAppError(String(e.message)); }
     finally { setIsGeneratingStrategy(false); }
   };
-
+  
   const generateHooks = async () => {
+    if (isGeneratingHooks) return;
     setIsGeneratingHooks(true);
     try {
       const data = await callAI({
@@ -371,6 +378,7 @@ export default function App() {
   };
 
   // --- RENDER ---
+  
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
       <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
@@ -474,6 +482,7 @@ export default function App() {
                   <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
                     <button 
                       onClick={handleClientSubmit} 
+                      // Button disabled, bis Auth bereit ist UND Input da ist
                       disabled={isSending || !authReady || !transcript || !clientName} 
                       className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all"
                     >
@@ -495,7 +504,7 @@ export default function App() {
       <header className="px-8 h-20 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md sticky top-0 z-20">
         <span className="font-bold text-xl">Designstudio<span className="text-[#e32338]">Fuchs</span></span>
         <div className="flex items-center gap-8">
-          <button onClick={() => copySimpleText(window.location.href.split('?')[0] + '?view=client', () => setLinkCopied(true))} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
+          <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
           <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button>
         </div>
       </header>
