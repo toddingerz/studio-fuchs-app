@@ -3,48 +3,41 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  onAuthStateChanged, 
-  signInWithCustomToken
+  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   getFirestore, 
   collection, 
   addDoc, 
-  onSnapshot,
-  doc
+  onSnapshot 
 } from 'firebase/firestore';
 import { 
   ChevronRight, ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
   Sparkles, HelpCircle, Lightbulb, Globe, Mic, Send, Briefcase, Inbox, ArrowRight, Square, 
-  UploadCloud, Share2, Lock, Unlock, MousePointerClick, FileText, Pause, Play, Trash2, 
-  AlertCircle, Users, LayoutGrid
+  UploadCloud, Lock, FileText, Pause, Play, Trash2, AlertCircle
 } from 'lucide-react';
 
 // =================================================================
-// 1. STABILE FIREBASE INITIALISIERUNG
+// 1. STABILE INITIALISIERUNG (ONLINE ONLY)
 // =================================================================
 
-let firebaseApp, auth, db;
+// Firebase Config direkt für Vercel Production hinterlegt
+const firebaseConfig = {
+  apiKey: "AIzaSyCd9YnXBiLct5RFgqqDCnvIODV5dVtKkmI",
+  authDomain: "studio-fuchs.firebaseapp.com",
+  projectId: "studio-fuchs",
+  storageBucket: "studio-fuchs.firebasestorage.app",
+  messagingSenderId: "743239245515",
+  appId: "1:743239245515:web:b32ec9724c0dcc853b454e"
+};
 
-try {
-  // Sicherer Zugriff auf globale Konfiguration
-  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-  if (configStr) {
-    const firebaseConfig = typeof configStr === 'string' ? JSON.parse(configStr) : configStr;
-    if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
-      firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-      auth = getAuth(firebaseApp);
-      db = getFirestore(firebaseApp);
-    }
-  }
-} catch (e) {
-  console.error("Firebase Setup Error:", e);
-}
-
-const appId = (typeof __app_id !== 'undefined' ? __app_id : 'brand-dna-studio-fuchs-live').replace(/[^a-zA-Z0-9_-]/g, '_');
+const appId = 'brand-dna-studio-fuchs-live';
 const ADMIN_PIN = "1704"; 
-const PROXY_URL = "/api/gemini"; 
-const apiKey = ""; // System-Vorgabe
+const PROXY_URL = "/api/gemini"; // Relativer Pfad für Vercel API Routes
+
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+const auth = getAuth(app);
+const db = getFirestore(app);
 
 // =================================================================
 // DATEN (DEIN DESIGN-STAND)
@@ -70,11 +63,11 @@ const INTERVIEW_QUESTIONS = [
   { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
 ];
 
-const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Antworte AUSSCHLIESSLICH mit validem JSON.`;
+const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Antworte AUSSCHLIESSLICH mit reinem JSON-Objekt.`;
 const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs, Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse. Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
-// APP COMPONENT
+// APP
 // =================================================================
 
 export default function App() {
@@ -85,24 +78,24 @@ export default function App() {
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
-  
-  // Workspace & Input
+
+  // Workspace
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [socialUrl, setSocialUrl] = useState("");
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
-  const [isMagicLink, setIsMagicLink] = useState(false);
   
-  // Status
+  // Status & Locking
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
+  const isAiBusy = isTranscribing || isGenerating || isGeneratingHooks || isGeneratingStrategy;
 
-  // Ergebnisse
+  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
@@ -125,89 +118,50 @@ export default function App() {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
 
-  // --- 1. AUTH INITIALISIERUNG ---
+  // --- 1. AUTH & LISTENERS ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') {
-        setAppMode('client');
-        setIsMagicLink(true);
-    }
-
-    if (!auth) return;
-
+    if (params.get('view') === 'client') setAppMode('client');
+    
+    // Anonym anmelden für Firestore Zugriff
     const initAuth = async () => {
       try {
-        if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-          await signInWithCustomToken(auth, window.__initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInAnonymously(auth);
       } catch (e) {
-        console.error("Auth Failure:", e);
+        console.error("Auth Init Error", e);
       }
     };
-
     initAuth();
+    
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // --- 2. DATA FETCHING ---
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
-    
     const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-    const unsubscribe = onSnapshot(submissionsRef, 
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-      },
-      (error) => {
-        console.error("Firestore error:", error);
-      }
-    );
+    const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+    }, (error) => {
+      console.error("Firestore Error", error);
+    });
     return () => unsubscribe();
   }, [user, isAdminLoggedIn]);
 
-  // --- HELPER ---
-  const copySimpleText = (text, callback) => {
-    if (!text) return;
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    document.body.appendChild(textArea);
-    textArea.select();
-    try { document.execCommand('copy'); if(callback) callback(); } catch (err) {}
-    document.body.removeChild(textArea);
-  };
-
-  const copyMagicLink = () => {
-    const url = window.location.href.split('?')[0] + '?view=client';
-    copySimpleText(url, () => {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    });
-  };
-
-  const cleanJsonResponse = (rawText) => {
-    if (!rawText) return null;
-    let cleaned = rawText.trim();
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) cleaned = match[0];
-    return cleaned;
-  };
-
-  // --- API LOGIK (400/429 FIX) ---
-  const callAI = async (payload, maxRetries = 7) => {
-    const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
-
+  // --- 2. AI & API LOGIK (DEBOUNCE & BACKOFF) ---
+  const callAI = async (payload, maxRetries = 5) => {
+    if (isAiBusy) return; // Request-Lock
+    
+    const delays = [1000, 2000, 4000, 8000, 16000];
     for (let i = 0; i < maxRetries; i++) {
         try {
             const res = await fetch(PROXY_URL, {
-                method: "POST", 
+                method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ 
                     model: "gemini-2.5-flash-preview-09-2025", 
-                    ...payload // Flache Struktur ohne 'payload' Key (behebt 400er)
+                    ...payload // Direkte Struktur für Google API
                 })
             });
 
@@ -217,7 +171,7 @@ export default function App() {
             }
 
             const data = await res.json();
-            if (!res.ok) throw new Error(String(data.message || data.error || `Fehler ${res.status}`));
+            if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
             return data;
         } catch (error) {
             if (i === maxRetries - 1) throw error;
@@ -226,24 +180,26 @@ export default function App() {
     }
   };
 
+  // --- 3. ACTIONS ---
   const processAudio = async (blob) => {
+    if (isAiBusy) return;
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
     reader.readAsDataURL(blob);
     reader.onload = async () => {
       try {
+        const cleanMime = blob.type.split(';')[0] || 'audio/webm';
         const data = await callAI({ 
-          contents: [{ parts: [{ text: "Transkribiere Audio auf Deutsch." }, { inlineData: { mimeType: blob.type.split(';')[0] || 'audio/webm', data: reader.result.split(',')[1] } }] }] 
+          contents: [{ parts: [{ text: "Transkribiere auf Deutsch." }, { inlineData: { mimeType: cleanMime, data: reader.result.split(',')[1] } }] }] 
         });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
-      } catch (err) { setAppError("KI-Fehler: " + String(err.message)); }
+      } catch (err) { setAppError("KI überlastet. Bitte kurz warten."); }
       finally { setIsTranscribing(false); }
     };
   };
 
   const startRecording = async () => {
-    setAppError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioContextRef.current = new AudioContext();
@@ -254,7 +210,7 @@ export default function App() {
       const update = () => {
         if(!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
-        setAudioLevel(dataArray.reduce((a, b) => a + b) / dataArray.length);
+        setAudioLevel(dataArray.reduce((a,b)=>a+b)/dataArray.length);
         animationFrameRef.current = requestAnimationFrame(update);
       };
       update();
@@ -262,101 +218,80 @@ export default function App() {
       audioChunksRef.current = [];
       mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
       mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
-        processAudio(blob);
+        processAudio(new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType }));
         stream.getTracks().forEach(t => t.stop());
       };
       mediaRecorderRef.current.start();
       setIsRecording(true); setIsPaused(false);
-    } catch (err) { setAppError("Mikrofon-Zugriff fehlgeschlagen."); }
-  };
-
-  const togglePause = () => {
-      if (!mediaRecorderRef.current) return;
-      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); setAudioLevel(0); } 
-      else { mediaRecorderRef.current.resume(); setIsPaused(false); }
-  };
-  
-  const stopRecording = () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
-      setIsRecording(false); setIsPaused(false);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    } catch (e) { setAppError("Mikrofon-Zugriff verweigert."); }
   };
 
   const handleClientSubmit = async () => {
-    if (!clientName.trim() || !transcript.trim()) return;
-    setIsSending(true);
-    setAppError(null);
+    if (!clientName.trim() || !transcript.trim() || !user) return;
+    setIsSending(true); setAppError(null);
     try {
-      if (!db || !user) throw new Error("Datenbank nicht bereit. Bitte lade die Seite neu.");
-      
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
-        name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
-        category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
+        name: clientName, company: clientCompany, category: clientCategory, 
+        companySize: companySize, text: transcript, timestamp: Date.now()
       });
       setClientSubmitted(true);
-    } catch (err) { setAppError("Fehler: " + String(err.message)); }
+    } catch (err) { setAppError("Datenbank-Fehler beim Senden."); }
     finally { setIsSending(false); }
   };
 
-  const loadFromInbox = (sub) => {
-    setTranscript(sub.text || "");
-    if (sub.category) {
-        if (sub.category === "Nicht sicher") setSelectedCategory(null);
-        else { const found = CATEGORIES.find(c => c.label === sub.category); setSelectedCategory(found || null); }
-    }
-    setCompanySize(sub.companySize || "");
-    setActiveClientName(String(sub.name || "Gast"));
-    setWebsiteUrl(sub.website || "");
-    setSocialUrl(sub.social || "");
-    setStep(2); 
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleDNAAnalyse = async () => {
+  const generateDNA = async () => {
+    if (isAiBusy || !transcript) return;
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
       const data = await callAI({
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
+        contents: [{ parts: [{ text: `Kunde: ${companySize}, ${selectedCategory?.label}\nInput: ${transcript}` }] }],
         generationConfig: { responseMimeType: "application/json" }
       });
-      const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      setOutputJson(JSON.parse(cleanJsonResponse(rawJson)));
+      const res = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      setOutputJson(JSON.parse(res.trim()));
       setStep(4);
-    } catch (err) { setAppError(String(err.message)); setStep(2); }
+    } catch (err) { setAppError("KI-Fehler bei DNA Analyse."); setStep(2); }
     finally { setIsGenerating(false); }
   };
 
-  const handleStrategyAnalyse = async () => {
+  const generateStrategy = async () => {
+    if (isAiBusy) return;
     setIsGeneratingStrategy(true);
     try {
       const data = await callAI({
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
       });
-      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      const res = JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
       setStrategyReport(String(res.report));
-    } catch (err) { setAppError("Analyse-Fehler: " + String(err.message)); } 
+    } catch (err) { setAppError("KI-Fehler beim Report."); }
     finally { setIsGeneratingStrategy(false); }
   };
 
-  const generateHooks = async () => {
-    setIsGeneratingHooks(true);
-    try {
-      const data = await callAI({
-        systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
-        contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
-        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
-      });
-      const raw = data.candidates[0].content.parts[0].text;
-      setSocialHooks(JSON.parse(cleanJsonResponse(raw)));
-    } catch (e) { setAppError(String(e.message)); }
-    finally { setIsGeneratingHooks(false); }
+  const loadFromInbox = (sub) => {
+    setTranscript(sub.text || "");
+    setCompanySize(sub.companySize || "");
+    setActiveClientName(sub.name || "Gast");
+    setStep(2);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const copyToClipboard = (txt) => {
+    const el = document.createElement('textarea');
+    el.value = txt; document.body.appendChild(el);
+    el.select(); document.execCommand('copy');
+    document.body.removeChild(el);
+    setCopied(true); setTimeout(()=>setCopied(false), 2000);
+  };
+
+  const copyMagicLink = () => {
+    const url = window.location.href.split('?')[0] + '?view=client';
+    copyToClipboard(url);
+    setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
   };
 
   // --- RENDER ---
-
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
       <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
@@ -380,16 +315,8 @@ export default function App() {
 
   if (appMode === 'login') return (
     <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
-      <form onSubmit={(e) => { 
-        e.preventDefault(); 
-        if(pinInput === ADMIN_PIN) {
-          setIsAdminLoggedIn(true);
-          setAppMode('agency'); 
-        } else {
-          setLoginError(true);
-        }
-      }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
-        <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
+      <form onSubmit={(e) => { e.preventDefault(); if(pinInput === ADMIN_PIN) { setIsAdminLoggedIn(true); setAppMode('agency'); } else setLoginError(true); }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
+        <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest text-white">Admin PIN</h2>
         <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
         {loginError && <p className="text-[#e32338] font-bold mb-4">PIN falsch!</p>}
         <div className="flex gap-4"><button type="button" onClick={() => setAppMode('select')} className="flex-1 opacity-40 font-bold uppercase text-xs">Abbruch</button><button type="submit" className="flex-1 bg-[#e32338] py-4 rounded-2xl font-bold uppercase text-xs">Login</button></div>
@@ -401,107 +328,80 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
       <header className="px-8 h-24 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md">
         <div className="font-bold text-2xl">Designstudio<span className="text-[#e32338]">Fuchs</span></div>
-        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full hover:bg-white transition-all">Abbrechen</button>
+        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full">Abbrechen</button>
       </header>
       <main className="max-w-6xl mx-auto px-8 py-16 animate-in fade-in duration-700">
         {clientSubmitted ? (
           <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
-            <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
+            <h2 className="text-4xl font-bold mb-4 text-[#2c233e]">Erfolgreich!</h2>
             <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold shadow-xl">Zur Startseite</button>
+            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold shadow-xl hover:bg-black">Startseite</button>
           </div>
         ) : (
-          <>
-            <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-              <div className="lg:col-span-5">
-                <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
-                  <h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5" /> Leitfragen</h3>
-                  <div className="space-y-6">
-                    {INTERVIEW_QUESTIONS.map(q => (
-                      <div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm mb-1">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="lg:col-span-7 space-y-8">
-                <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-8">
-                  <div className="grid grid-cols-2 gap-4">
-                    <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                    <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Wie groß ist dein Team?</label>
-                    <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">In welchem Bereich bist du tätig?</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
-                      <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-8">
-                      <input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none text-xs" />
-                      <input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-xl px-4 py-3 outline-none text-xs" />
-                  </div>
-                </div>
-                <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
-                  <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
-                    {!isRecording ? (
-                      <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all transform hover:scale-105 active:scale-95"><Mic className="w-6 h-6" /> Aufnahme starten</button>
-                    ) : (
-                      <div className="flex flex-col items-center gap-4 w-full">
-                        <div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338] transition-all" style={{ width: `${Math.min(100, audioLevel * 2)}%` }} /></div>
-                        <div className="flex gap-4">
-                          <button onClick={togglePause} className={`flex items-center gap-3 px-8 py-5 text-white rounded-full font-bold uppercase text-[10px] shadow-lg transition-all ${isPaused ? 'bg-emerald-500' : 'bg-amber-500'}`}>{isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />} {isPaused ? "Weiter" : "Pause"}</button>
-                          <button onClick={stopRecording} className="flex items-center gap-3 px-8 py-5 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px] shadow-lg"><Square className="w-4 h-4" /></button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest text-[#2c233e]">KI schreibt Nachricht...</p></div>}
-                  <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Tippe oder sprich..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
-                  <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
-                    <button onClick={handleClientSubmit} disabled={isSending || !transcript || !clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all">
-                      {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Analyse senden</>}
-                    </button>
-                  </div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+            <div className="lg:col-span-5">
+              <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
+                <h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5" /> Leitfragen</h3>
+                <div className="space-y-6">
+                  {INTERVIEW_QUESTIONS.map(q => (
+                    <div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm mb-1">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>
+                  ))}
                 </div>
               </div>
             </div>
-          </>
+            <div className="lg:col-span-7 space-y-8">
+              {appError && <div className="bg-red-50 text-red-600 p-6 rounded-3xl font-bold animate-in slide-in-from-top-2">{String(appError)}</div>}
+              <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-8">
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
+                  <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
+                </div>
+                <div className="space-y-4">
+                  <label className="text-[10px] font-bold uppercase opacity-40 ml-2 text-[#2c233e]">Teamgröße</label>
+                  <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
+                </div>
+                <div className="space-y-4">
+                  <label className="text-[10px] font-bold uppercase opacity-40 ml-2 text-[#2c233e]">Bereich</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
+                    <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
+                <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
+                  {!isRecording ? <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:scale-105 transition-all"><Mic className="w-6 h-6" /> Aufnahme</button> : <div className="flex gap-4 items-center"><div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338] transition-all" style={{ width: `${Math.min(100, audioLevel * 2)}%` }} /></div><button onClick={() => mediaRecorderRef.current?.stop()} className="p-4 bg-[#2c233e] text-white rounded-full"><Square /></button></div>}
+                </div>
+                {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest text-[#2c233e]">KI schreibt...</p></div>}
+                <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
+                <div className="p-8 border-t border-white/40 flex justify-end bg-white/10"><button onClick={handleClientSubmit} disabled={isSending || isAiBusy || !transcript || !clientName} className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 transform hover:translate-x-1 transition-all">{isSending ? <Loader2 className="animate-spin" /> : 'Senden'}</button></div>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
   );
 
-  // AGENCY DASHBOARD
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans selection:bg-[#e32338]/20">
+    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
       <header className="px-8 h-20 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md sticky top-0 z-20">
         <span className="font-bold text-xl tracking-tight">Designstudio<span className="text-[#e32338]">Fuchs</span></span>
-        <div className="flex items-center gap-8">
-          <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
-          <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button>
-        </div>
+        <div className="flex items-center gap-8"><button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button><button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button></div>
       </header>
       <main className="max-w-7xl mx-auto px-8 py-12 animate-in fade-in duration-700">
         {step === 1 && (
           <div className="mb-20">
             <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4" /> Posteingang ({submissions.length})</h2>
-            {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: {String(activeClientName)} aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {submissions.length === 0 ? <div className="col-span-full py-20 text-center opacity-30 font-bold border-4 border-dashed border-[#2c233e]/10 rounded-[3rem]">Warte auf Daten...</div> : submissions.map(sub => (
+            {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: {String(activeClientName)} aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">{submissions.map(sub => (
                 <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
                   <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name || "Gast")}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded font-bold uppercase">{String(sub.category || "Unklar")}</span></div>
                   <p className="text-sm italic opacity-60 line-clamp-3 mb-10 leading-relaxed font-medium">"{String(sub.text || "")}"</p>
                   <button onClick={() => loadFromInbox(sub)} className="w-full py-4 bg-[#2c233e] text-white rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-black transition-all">Laden</button>
                 </div>
-              ))}
-            </div>
+              ))}</div>
             <div className="mt-24 pt-16 border-t border-[#2c233e]/5">
               <h1 className="text-4xl font-bold mb-12">Analyse <span className="text-[#e32338]">Basis.</span></h1>
               <div className="grid grid-cols-2 gap-6">{CATEGORIES.map(c => <button key={c.id} onClick={() => { setSelectedCategory(c); setStep(2); }} className={`p-8 rounded-[3rem] text-left transition-all ${selectedCategory?.id === c.id ? 'bg-[#2c233e] text-white' : 'bg-white/40 hover:bg-white'}`}><c.Icon className={`w-8 h-8 mb-6 ${selectedCategory?.id === c.id ? 'text-[#e32338]' : 'text-[#2c233e]/30'}`} /><div className="font-bold text-2xl">{c.label}</div></button>)}</div>
@@ -511,18 +411,14 @@ export default function App() {
         {step === 2 && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 space-y-12">
             <div className="flex justify-between items-end gap-8">
-              <div><button onClick={() => setStep(1)} className="flex items-center gap-2 text-xs font-bold opacity-50 mb-4 hover:opacity-100"><ChevronLeft className="w-4 h-4" /> Zurück</button><h2 className="text-4xl font-bold tracking-tight">Workspace.</h2></div>
-              <button onClick={handleDNAAnalyse} disabled={!transcript || isGenerating} className="px-12 py-5 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-2xl hover:scale-105 transition-all">DNA Analyse Starten</button>
+              <div><button onClick={() => setStep(1)} className="flex items-center gap-2 text-xs font-bold opacity-50 mb-4 hover:opacity-100"><ChevronLeft className="w-4 h-4" /> Zurück</button><h2 className="text-4xl font-bold tracking-tight text-[#2c233e]">Workspace.</h2></div>
+              <button onClick={handleDNAAnalyse} disabled={!transcript || isAiBusy} className="px-12 py-5 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-2xl hover:scale-105 transition-all">DNA Analyse Starten</button>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
               <div className="lg:col-span-8 bg-white/50 border border-white/60 rounded-[3rem] p-10 shadow-xl">
-                <div className="grid grid-cols-2 gap-6 mb-10">
-                  <div className="relative"><Globe className="w-5 h-5 absolute left-4 top-4 opacity-20" /><input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-xl pl-12 pr-4 py-4 outline-none font-medium" /></div>
-                  <div className="relative"><User className="w-5 h-5 absolute left-4 top-4 opacity-20" /><input value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Social Media" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-xl pl-12 pr-4 py-4 outline-none font-medium" /></div>
-                </div>
-                <textarea value={transcript} onChange={e => setTranscript(e.target.value)} className="w-full h-[500px] bg-transparent resize-none outline-none text-xl leading-relaxed font-medium" placeholder="Input Daten..." />
+                <textarea value={transcript} onChange={e => setTranscript(e.target.value)} className="w-full h-[600px] bg-transparent resize-none outline-none text-xl leading-relaxed font-medium" placeholder="Input Daten..." />
               </div>
-              <div className="lg:col-span-4 bg-white/30 border border-white/60 rounded-[3.5rem] p-10 h-fit shadow-sm">
+              <div className="lg:col-span-4 bg-white/30 border border-white/60 rounded-[3.5rem] p-10 h-fit shadow-sm text-[#2c233e]">
                 <h3 className="text-[10px] font-bold uppercase opacity-50 mb-10 tracking-widest">Client Meta Info</h3>
                 <div className="space-y-6 text-sm font-bold uppercase">
                   <div className="flex justify-between pb-4 border-b border-[#2c233e]/5"><span>Name:</span><span>{String(activeClientName) || "Gast"}</span></div>
@@ -533,24 +429,18 @@ export default function App() {
             </div>
           </div>
         )}
-        {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4 tracking-tight">Analyse aktiv.</h2><p className="text-xl opacity-40">Freystil Intelligence Bot kalibriert Ergebnisse...</p></div>}
+        {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4 tracking-tight text-[#2c233e]">Analyse aktiv.</h2><p className="text-xl opacity-40">Intelligence Bot kalibriert Ergebnisse...</p></div>}
         {step === 4 && outputJson && (
           <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
             <div className="flex justify-between items-center">
-              <h1 className="text-4xl font-bold tracking-tight">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
-              <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
+              <h1 className="text-4xl font-bold tracking-tight text-[#2c233e]">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
+              <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copyToClipboard(JSON.stringify(outputJson, null, 2))} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />} Kopieren</button></div>
             </div>
-            {/* STRATEGIE REPORT CARD */}
             <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3 tracking-tight"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={handleStrategyAnalyse} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
-              {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3 tracking-tight"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3></div>{!strategyReport && <button onClick={generateStrategy} disabled={isAiBusy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
+              {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copyToClipboard(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
             </div>
-            {/* JSON BOX */}
             <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px] custom-scrollbar"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/5"><span className="text-white/30 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/30" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
-            <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit">
-                 <h3 className="text-3xl font-bold mb-10 flex items-center gap-3 tracking-tight"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>
-                 {!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-semibold relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{String(h)}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}
-            </div>
           </div>
         )}
       </main>
