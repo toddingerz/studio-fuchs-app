@@ -24,26 +24,27 @@ import {
 // =================================================================
 
 // Firebase Safe Init
-let app;
-let auth;
-let db;
-
+let app, auth, db;
 try {
+  // Versucht Config zu lesen, ignoriert Fehler im Build/Preview
   const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
   const firebaseConfig = JSON.parse(configStr);
+  
   if (Object.keys(firebaseConfig).length > 0) {
       app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
       auth = getAuth(app);
       db = getFirestore(app);
   }
 } catch (e) {
-  console.warn("Firebase Init skipped (Build mode)", e);
+  console.warn("Firebase Init skipped (Build mode or missing config)");
 }
 
-// CONFIG
-const apiKey = ""; // FÜR VORSCHAU HIER KEY EINTRAGEN (Löschen vor Vercel Deploy!)
-const PROXY_URL = "/api/gemini"; 
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'brand-dna-studio-fuchs-live';
+// --- WICHTIG: API KEY FÜR VORSCHAU ---
+// Auf Vercel wird dieser Key ignoriert (da läuft es über den Server).
+// Hier in der Vorschau MUSS er rein, sonst geht es nicht.
+const PREVIEW_API_KEY = ""; 
+
+const appId = 'brand-dna-studio-fuchs-live';
 const ADMIN_PIN = "1704"; 
 
 // =================================================================
@@ -52,7 +53,6 @@ const ADMIN_PIN = "1704";
 
 const COMPANY_SIZES = ["Nur ich (Solo)", "1-5 Mitarbeiter", "6-20 Mitarbeiter", "21-100 Mitarbeiter", "Über 100 Mitarbeiter"];
 
-// Icons als Komponentenreferenz (Wichtig für React Rendering)
 const CATEGORIES = [
   { id: "local", label: "Local Service Business", Icon: Store, examples: ["Friseur", "Tattoo", "Physio"] },
   { id: "med", label: "Medizin / Gesundheit", Icon: HeartPulse, examples: ["Arzt", "Zahnarzt", "Pflege"] },
@@ -71,34 +71,15 @@ const INTERVIEW_QUESTIONS = [
   { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
 ];
 
-// =================================================================
-// PROMPTS
-// =================================================================
-
 const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. 
-Deine Aufgabe ist es, aus dem Rohtext und den Web-Daten eine präzise Marken-Identität zu extrahieren.
-Berücksichtige zwingend die Firmengröße und die gewählte Kategorie.
-Gib AUSSCHLIESSLICH valides JSON aus. Keine Erklärungen, keine Markdown-Code-Blöcke.`;
+Deine Aufgabe: Extrahiere aus Rohtext, Firmengröße und Web-Daten eine präzise Marken-Identität nach dem Base44-Standard.
+Gib AUSSCHLIESSLICH valides JSON aus. Keine Erklärungen.`;
 
 const STRATEGY_SYSTEM_INSTRUCTION = `
-Du bist Thorsten Fuchs von designstudiofuchs.de, der spezialisierte Sales-Mail-Architekt für Kreativagenturen. 
-Du arbeitest nach dem Freystil-Framework: Sales-Psychologie, Storybased Selling, DISG-Tonalität.
-
-DEINE AUFGABE: 
-Schreibe eine Sales-Mail & Strategie-Analyse für den Kunden (Personalisiert auf Website/Input).
-
-STRUKTUR DES REPORTS:
-1. Cliffhanger-Betreff (A/B Test)
-2. Hyperpersonalisierter Einstieg
-3. Selbstidentifikation (Pain/Potenzial: Warum wird aktuell Potenzial verschenkt? Zahlen nutzen!)
-4. Storybased Lösung (Mini-Case: Problem -> Lösung -> Ergebnis)
-5. Konkreter Nutzen (Ergebnisse + Planbarkeit statt nur "Bilder")
-6. Unaufdringlicher, klarer CTA (15 Min. Termin)
-
-TONALITÄT:
-Kurz. Präzise. Sechs-Wort-Sätze. Kein Marketing-Geschwurbel. CEO-tauglich. 
-Antworte im JSON Format mit einem Feld "report", das den fertigen Text enthält.
-`;
+Du bist Thorsten Fuchs von designstudiofuchs.de, spezialisierter Sales-Mail-Architekt.
+Erstelle eine "Freystil Sales"-Analyse.
+STRUKTUR: Cliffhanger-Betreff, Einstieg, Pain/Potenzial, Storybased Lösung, Nutzen, CTA.
+Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
 // APP
@@ -110,11 +91,11 @@ export default function App() {
   const [submissions, setSubmissions] = useState([]);
   const [isMagicLink, setIsMagicLink] = useState(false);
   const [activeClientName, setActiveClientName] = useState(null);
-   
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
 
+  // Workspace
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -122,19 +103,21 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
+  // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
 
+  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
-
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
+  // Client Input
   const [clientName, setClientName] = useState("");
   const [clientCompany, setClientCompany] = useState("");
   const [clientWebsite, setClientWebsite] = useState("");
@@ -154,7 +137,7 @@ export default function App() {
   const categorySectionRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // --- 1. INITIALISIERUNG ---
+  // 1. Init & Auth
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'client') {
@@ -176,7 +159,7 @@ export default function App() {
     }
   }, []);
 
-  // --- 2. DATEN LADEN ---
+  // 2. Fetch Data
   useEffect(() => {
     if (!db || !user || !isAdminLoggedIn) return;
     try {
@@ -189,8 +172,7 @@ export default function App() {
     } catch (err) { console.error("Firestore Error", err); }
   }, [user, isAdminLoggedIn]);
 
-  // --- 3. HELPER FUNCTIONS (HOISTED TO TOP) ---
-  
+  // --- HELPER ---
   const copySimpleText = (text, callback) => {
     if (!text) return;
     const textArea = document.createElement("textarea");
@@ -217,30 +199,34 @@ export default function App() {
     return cleaned;
   };
 
+  // --- INTELLIGENTER API CALL ---
   const callAI = async (payload) => {
-    // HYBRID-STRATEGIE: 
-    // 1. Versuch: Vercel Proxy (Production)
-    // 2. Versuch: Direkter Aufruf (Preview/Local, braucht apiKey Variable)
-    
-    try {
-        if (!window.location.hostname.includes('googleusercontent')) {
-            const response = await fetch(PROXY_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
-            });
-            if (response.status === 404) throw new Error("Proxy missing"); // Fallback trigger
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.message || "Server Error");
-            return data;
-        }
-        throw new Error("Force direct call for preview");
-    } catch (proxyError) {
-        // Fallback Direct Call
-        if (!apiKey) throw new Error("VORSCHAU-MODUS: Bitte API Key in den Code (Zeile 52) eintragen oder auf Vercel deployen.");
+    // Check: Laufen wir auf Vercel/Production?
+    const isVercel = window.location.hostname.includes('vercel.app') || 
+                     window.location.hostname.includes('studio-fuchs') ||
+                     window.location.hostname.includes('localhost'); // Localhost hat oft auch Proxy Setup
+
+    // Wenn wir in der Vorschau sind (blob/googleusercontent), MÜSSEN wir den Key direkt nutzen.
+    // Proxy URLs wie "/api/gemini" funktionieren in Blobs nicht.
+    const isPreview = window.location.hostname.includes('googleusercontent');
+
+    if (!isPreview && isVercel) {
+        // VERCEL MODE: Nutze sicheres Backend
+        const response = await fetch('/api/gemini', {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
+        });
+        if (response.status === 404) throw new Error("Backend API nicht gefunden (404).");
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || data.error || "Server Fehler");
+        return data;
+    } else {
+        // PREVIEW MODE: Nutze direkten Key
+        if (!PREVIEW_API_KEY) throw new Error("VORSCHAU-MODUS: Bitte API Key in Zeile 48 eintragen.");
         
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${PREVIEW_API_KEY}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -248,13 +234,12 @@ export default function App() {
           }
         );
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || "Google API Error");
+        if (!response.ok) throw new Error(data.error?.message || "Google API Fehler");
         return data;
     }
   };
 
-  // --- 4. LOGIK ---
-
+  // --- LOGIC ---
   const processAudio = async (file, targetSetter) => {
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
@@ -282,7 +267,6 @@ export default function App() {
       analyserRef.current.fftSize = 256;
       source.connect(analyserRef.current);
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-      
       const updateVisualizer = () => {
         if(!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
@@ -297,7 +281,6 @@ export default function App() {
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/mp3' });
         processAudio(blob, setTranscript);
-        // Tracks stoppen
         stream.getTracks().forEach(track => track.stop());
       };
       mediaRecorderRef.current.start();
@@ -340,7 +323,7 @@ export default function App() {
     setCompanySize(sub.companySize || "");
     if (sub.category) {
         const found = CATEGORIES.find(c => c.label === sub.category);
-        setSelectedCategory(found || null); // FIX: Ensure valid object or null
+        setSelectedCategory(found || null);
     }
     setActiveClientName(sub.name);
     setStep(2); 
@@ -351,12 +334,10 @@ export default function App() {
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
       const payload = {
-        model: "gemini-2.5-flash-preview-09-2025",
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
         contents: [{ parts: [{ text: `Firmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}\nSocial: ${socialUrl}\nInput: ${transcript}` }] }],
         generationConfig: { responseMimeType: "application/json" }
       };
-      
       const data = await callAI(payload);
       const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
@@ -372,7 +353,6 @@ export default function App() {
     setIsGeneratingHooks(true);
     try {
       const payload = {
-        model: "gemini-2.5-flash-preview-09-2025",
         systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
         contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
         generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
@@ -388,19 +368,20 @@ export default function App() {
     setIsGeneratingStrategy(true);
     try {
       const payload = {
-        model: "gemini-2.5-flash-preview-09-2025",
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
         contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nFirma: ${clientCompany}\nGröße: ${companySize}\nBereich: ${selectedCategory?.label}\nWebsite: ${websiteUrl}\nInterview: ${transcript}` }] }],
         generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { report: { type: "STRING" } } } }
       };
       const data = await callAI(payload);
-      setStrategyReport(JSON.parse(cleanJsonResponse(data.candidates[0].content.parts[0].text)).report);
-    } catch (err) { setAppError(err.message); } 
+      const jsonResponse = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      setStrategyReport(jsonResponse.report);
+    } catch (err) { setAppError("Strategie-Fehler: " + err.message); } 
     finally { setIsGeneratingStrategy(false); }
   };
 
-  // --- UI ---
-
+  // --- RENDER ---
+  // (Identisch zum vorherigen Design, nur Logik-Fixes angewendet)
+  
   if (appMode === 'select') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
@@ -459,14 +440,12 @@ export default function App() {
           <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
           {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 text-red-600 px-6 py-4 rounded-2xl font-bold">{appError}</div>}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-            {/* Left: Questions */}
             <div className="lg:col-span-5"><div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl"><h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5"/> Leitfragen</h3><div className="space-y-6">{INTERVIEW_QUESTIONS.map(q=><div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>)}</div></div></div>
-            {/* Right: Input */}
             <div className="lg:col-span-7 space-y-8">
               <div className="bg-white/40 border border-white/60 rounded-[3rem] p-8 shadow-xl space-y-4">
                 <div className="grid grid-cols-2 gap-4"><input type="text" value={clientName} onChange={e=>setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium"/><input type="text" value={clientCompany} onChange={e=>setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium"/></div>
-                <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40">Teamgröße</label><div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s=><button key={s} onClick={()=>setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize===s?'bg-[#e32338] text-white border-transparent':'bg-white/30 border-white/60 text-[#2c233e]/50'}`}>{s}</button>)}</div></div>
-                <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40">Bereich</label><div className="grid grid-cols-2 gap-2">{CATEGORIES.map(c=><button key={c.id} onClick={()=>setClientCategory(c.label)} className={`p-3 rounded-2xl text-left border transition-all ${clientCategory===c.label?'bg-[#e32338] text-white border-transparent':'bg-white/30 border-white/60 text-[#2c233e]/60'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4"/>{c.label}</div></button>)}</div></div>
+                <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40">Teamgröße</label><div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s=><button key={s} onClick={()=>setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50'}`}>{s}</button>)}</div></div>
+                <div className="space-y-2"><label className="text-[10px] font-bold uppercase opacity-40">Bereich</label><div className="grid grid-cols-2 gap-2">{CATEGORIES.map(c=><button key={c.id} onClick={()=>setClientCategory(c.label)} className={`p-3 rounded-2xl text-left border transition-all ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4"/>{c.label}</div></button>)}</div></div>
                 <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={clientWebsite} onChange={e=>setClientWebsite(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs"/><input type="text" value={clientSocial} onChange={e=>setClientSocial(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs"/></div>
               </div>
               <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
@@ -491,8 +470,8 @@ export default function App() {
       <header className="border-b border-white/30 bg-white/20 backdrop-blur-md sticky top-0 z-20 px-8 h-20 flex items-center justify-between">
         <div className="flex items-center gap-2"><span className="font-bold text-2xl tracking-tight">Designstudio</span><span className="font-bold text-2xl tracking-tight text-[#e32338]">Fuchs</span></div>
         <div className="flex items-center gap-8">
-           <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
-           <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2"><Lock className="w-4 h-4" /> Logout</button>
+           <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
+           <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button>
         </div>
       </header>
 
@@ -503,7 +482,7 @@ export default function App() {
             <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] mb-8 text-[#e32338] flex items-center gap-3"><Inbox className="w-5 h-5" /> Live Posteingang ({submissions.length})</h2>
             
             {activeClientName && (
-                <div className="mb-8 animate-in slide-in-from-left duration-500 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl">
+                <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left">
                     <Sparkles className="w-4 h-4" /> Workspace: Daten von "{activeClientName}" aktiv
                     <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button>
                 </div>
@@ -518,7 +497,9 @@ export default function App() {
                     <span className="text-[9px] font-bold bg-[#e32338]/10 px-2 py-1 rounded uppercase tracking-widest">{sub.category || "Unklar"}</span>
                   </div>
                   <p className="text-sm italic opacity-60 line-clamp-3 mb-10 leading-relaxed">"{sub.text}"</p>
-                  <button onClick={() => loadFromInbox(sub)} className="w-full py-5 bg-[#2c233e] text-white rounded-2xl font-bold uppercase text-[11px] tracking-widest flex items-center justify-center gap-3 hover:bg-black transition-all">Workspace laden <ArrowRight className="w-4 h-4" /></button>
+                  <button onClick={() => loadFromInbox(sub)} className="w-full py-5 bg-[#2c233e] text-white rounded-2xl font-bold uppercase text-[11px] tracking-widest flex items-center justify-center gap-3 hover:bg-black transition-all">
+                    Workspace laden <ArrowRight className="w-4 h-4" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -546,14 +527,13 @@ export default function App() {
              {appError && <div className="mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl font-bold text-sm">{appError}</div>}
              <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
                <div className="lg:col-span-8 space-y-8">
-                 <div className="bg-white/50 border border-white/60 rounded-[3rem] p-8 grid grid-cols-1 md:grid-cols-2 gap-6 shadow-xl"><div className="relative"><Globe className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 opacity-30" /><input type="text" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-2xl pl-14 pr-6 py-5 font-medium outline-none shadow-sm focus:ring-2 focus:ring-[#e32338]/20 transition-all" /></div><div className="relative"><User className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 opacity-30" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Social Media" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-2xl pl-14 pr-6 py-5 font-medium outline-none shadow-sm focus:ring-2 focus:ring-[#e32338]/20 transition-all" /></div></div>
-                 <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Daten..." className="bg-white/60 backdrop-blur-xl w-full min-h-[600px] p-16 rounded-[4rem] border border-white/60 outline-none text-2xl leading-relaxed resize-none shadow-2xl placeholder:text-[#2c233e]/10" />
+                 <div className="bg-white/50 border border-white/60 rounded-[3rem] p-8 space-y-6 shadow-xl"><div className="grid grid-cols-2 gap-6"><div className="relative"><Globe className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 opacity-30" /><input type="text" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-2xl pl-14 pr-6 py-5 font-medium outline-none shadow-sm focus:ring-2 focus:ring-[#e32338]/20 transition-all" /></div><div className="relative"><User className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 opacity-30" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Social Media" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-2xl pl-14 pr-6 py-5 font-medium outline-none shadow-sm focus:ring-2 focus:ring-[#e32338]/20 transition-all" /></div></div></div>
+                 <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Interview-Daten einfügen..." className="bg-white/60 backdrop-blur-xl w-full min-h-[600px] p-16 rounded-[4rem] border border-white/60 outline-none text-2xl leading-relaxed resize-none shadow-2xl placeholder:text-[#2c233e]/10" />
                </div>
                <div className="lg:col-span-4 h-fit sticky top-28"><div className="bg-white/30 border border-white/60 rounded-[3.5rem] p-10 shadow-lg"><h3 className="text-[11px] font-bold uppercase tracking-widest mb-10 text-[#e32338]">Details</h3><div className="space-y-4 text-xs font-bold uppercase opacity-60"><div>Größe: {companySize || "N.A."}</div><div>Bereich: {selectedCategory?.label || "N.A."}</div></div></div></div>
              </div>
           </div>
         )}
-
         {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4 tracking-tight">Analyse aktiv.</h2><p className="text-xl opacity-40">Freystil Sales Bot kalibriert Ergebnisse...</p></div>}
         {step === 4 && outputJson && (
           <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
@@ -562,13 +542,12 @@ export default function App() {
                 <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setSocialHooks(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Inbox</button><button onClick={() => { copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON (Base44)'}</button></div>
              </div>
              
-             {/* STRATEGIE REPORT */}
              <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={generateStrategy} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
                {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{strategyReport}</div></div>}
              </div>
 
-             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12"><div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px] custom-scrollbar"><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div><div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit"><h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>{!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-medium relative group hover:bg-[#e32338]/5 transition-all shadow-sm">{h}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}</div></div>
+             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12"><div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div><div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit"><h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>{!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-medium relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{h}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}</div></div>
           </div>
         )}
       </main>
