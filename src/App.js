@@ -10,8 +10,7 @@ import {
   getFirestore, 
   collection, 
   addDoc, 
-  onSnapshot,
-  doc
+  onSnapshot
 } from 'firebase/firestore';
 import { 
   ChevronRight, ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
@@ -21,25 +20,39 @@ import {
 } from 'lucide-react';
 
 // =================================================================
-// 1. CONFIG & SETUP (ONLINE ONLY)
+// 1. KONFIGURATION (ONLINE ONLY)
 // =================================================================
 
 let app, auth, db;
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
-try {
-  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-  const firebaseConfig = JSON.parse(configStr);
-  
-  if (Object.keys(firebaseConfig).length > 0) {
-      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-      auth = getAuth(app);
-      db = getFirestore(app);
+const initFirebase = () => {
+  if (db && auth) return true;
+  try {
+    const configSource = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+    if (configSource) {
+      const firebaseConfig = typeof configSource === 'string' ? JSON.parse(configSource) : configSource;
+      if (firebaseConfig && Object.keys(firebaseConfig).length > 0) {
+        app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+        auth = getAuth(app);
+        db = getFirestore(app);
+        return true;
+      }
+    }
+    if (getApps().length > 0) {
+        app = getApp();
+        auth = getAuth(app);
+        db = getFirestore(app);
+        return !!(db && auth);
+    }
+  } catch (e) {
+    console.error("Firebase Init Error:", e);
   }
-} catch (e) {
-  console.warn("Firebase Init skipped", e);
-}
+  return false;
+};
+
+initFirebase();
 
 const ADMIN_PIN = "1704"; 
 const PROXY_URL = "/api/gemini"; 
@@ -68,16 +81,8 @@ const INTERVIEW_QUESTIONS = [
   { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
 ];
 
-const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. 
-Aufgabe: Extrahiere aus Input eine präzise Marken-Identität nach Base44.
-Format: REINES JSON. Keine Markdown-Formatierung.
-Felder: story_core, story_dna, brand_voice_rules, tone_tags, no_go_tags, audiences, goals_top3, content_themes, content_formats, local_focus, proof_points, category, inference_notes.`;
-
-const STRATEGY_SYSTEM_INSTRUCTION = `
-Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse.
-Struktur: 1. Cliffhanger-Betreff (A/B), 2. Hyperpersonalisierter Einstieg, 3. Pain/Potenzial, 4. Storybased Lösung, 5. Nutzen, 6. CTA.
-Tonalität: Kurz, präzise, CEO-tauglich.
-Antworte im JSON Format mit einem Feld "report".`;
+const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Format: REINES JSON.`;
+const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine ehrliche "Freystil Sales"-Analyse direkt an den Kunden. Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
 // APP COMPONENT
@@ -86,13 +91,13 @@ Antworte im JSON Format mit einem Feld "report".`;
 export default function App() {
   const [appMode, setAppMode] = useState('select'); 
   const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false); // NEU: Auth Ready State
   const [submissions, setSubmissions] = useState([]);
   const [activeClientName, setActiveClientName] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
   
-  // Workspace Data
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -100,26 +105,20 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
-  // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
-  const [authReady, setAuthReady] = useState(false); // NEU: Auth Ready State
 
-  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // Client Input
   const [clientName, setClientName] = useState("");
   const [clientCompany, setClientCompany] = useState("");
-  const [clientWebsite, setClientWebsite] = useState("");
-  const [clientSocial, setClientSocial] = useState("");
   const [clientCategory, setClientCategory] = useState(null);
   const [clientSubmitted, setClientSubmitted] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -133,71 +132,64 @@ export default function App() {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
-  const fileInputRef = useRef(null);
 
-  // 1. Auth & Init
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') setAppMode('client');
-    if (auth) {
-        const initAuth = async () => {
-            try {
-                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-                    await signInWithCustomToken(auth, window.__initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (e) { console.error("Auth Error", e); }
-        };
-        initAuth();
-        // Listener updated: Setzt authReady auf true, sobald User Status bekannt ist
-        return onAuthStateChanged(auth, (u) => {
-            setUser(u);
-            setAuthReady(true);
-        });
-    } else {
-        // Fallback falls Auth gar nicht geladen werden konnte (z.B. Offline/Config Fehler)
-        setAuthReady(true); 
-    }
-  }, []);
+  // --- ACTIONS & LOGIK ---
 
-  // 2. Fetch Data
-  useEffect(() => {
-    if (!db || !user || !isAdminLoggedIn) return;
-    try {
-      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSubmissions(data.sort((a, b) => b.timestamp - a.timestamp));
-      });
-      return () => unsubscribe();
-    } catch (err) { console.error("Firestore Error", err); }
-  }, [user, isAdminLoggedIn]);
+  const copySimpleText = (text, callback) => {
+    if (!text) return;
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    document.body.appendChild(textArea);
+    textArea.select();
+    try { document.execCommand('copy'); if(callback) callback(); } catch (err) {}
+    document.body.removeChild(textArea);
+  };
 
-  // --- API CALL LOGIC ---
-  const callAI = async (payload) => {
-    try {
-        const response = await fetch(PROXY_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              model: "gemini-2.5-flash-preview-09-2025", 
-              ...payload 
-            })
-        });
-        
-        const data = await response.json();
-        if (!response.ok) {
-            const errorMsg = data.message || data.error || `Server Fehler: ${response.status}`;
-            throw new Error(String(errorMsg));
+  const copyMagicLink = () => {
+    const url = window.location.href.split('?')[0] + '?view=client';
+    copySimpleText(url, () => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    });
+  };
+
+  const cleanJsonResponse = (rawText) => {
+    if (!rawText) return null;
+    let cleaned = rawText.trim();
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) cleaned = match[0];
+    return cleaned;
+  };
+
+  const callAI = async (payload, maxRetries = 7) => {
+    const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
+    const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
+
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const res = await fetch(PROXY_URL, {
+                method: "POST", 
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
+            });
+
+            if (res.status === 429 && i < maxRetries - 1) {
+                await new Promise(r => setTimeout(r, delays[i]));
+                continue;
+            }
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(String(err.message || err.error || `Server Fehler: ${res.status}`));
+            }
+            return await res.json();
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            await new Promise(r => setTimeout(r, delays[i]));
         }
-        return data;
-    } catch (e) {
-        throw e;
     }
   };
 
-  // --- LOGIC ---
   const processAudio = async (blob) => {
     setIsTranscribing(true); setAppError(null);
     const reader = new FileReader();
@@ -205,14 +197,7 @@ export default function App() {
     reader.onload = async () => {
       try {
         const cleanMimeType = blob.type.split(';')[0] || 'audio/webm';
-        const data = await callAI({ 
-          contents: [{ 
-            parts: [
-              { text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, 
-              { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }
-            ] 
-          }] 
-        });
+        const data = await callAI({ contents: [{ parts: [{ text: "Transkribiere dieses Audio wortwörtlich auf Deutsch. Antworte nur mit dem Text." }, { inlineData: { mimeType: cleanMimeType, data: reader.result.split(',')[1] } }] }] });
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) setTranscript(prev => prev ? prev + "\n\n" + text : text);
       } catch (err) { setAppError("Transkription fehlgeschlagen: " + String(err.message)); }
@@ -236,7 +221,6 @@ export default function App() {
         animationFrameRef.current = requestAnimationFrame(update);
       };
       update();
-      
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
       mediaRecorderRef.current.ondataavailable = e => audioChunksRef.current.push(e.data);
@@ -252,7 +236,7 @@ export default function App() {
   
   const togglePause = () => {
       if (!mediaRecorderRef.current) return;
-      if (!isPaused) { mediaRecorderRef.current.stop(); setIsPaused(true); setAudioLevel(0); } 
+      if (!isPaused) { mediaRecorderRef.current.pause(); setIsPaused(true); setAudioLevel(0); } 
       else { mediaRecorderRef.current.resume(); setIsPaused(false); }
   };
   
@@ -260,27 +244,29 @@ export default function App() {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
       setIsRecording(false); setIsPaused(false);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
   };
 
   const handleClientSubmit = async () => {
     if (!clientName.trim() || !transcript.trim()) return;
     setIsSending(true);
+    setAppError(null);
     try {
-      // Keine manuelle Prüfung auf db/user mehr nötig, Button ist disabled wenn nicht bereit
-      // Firestore wirft echten Fehler wenn Permissions fehlen
+      // Keine manuellen Checks mehr, wir verlassen uns auf den disabled-Button und Firestore-Error
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
         name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
       });
       setClientSubmitted(true);
-    } catch (err) { setAppError("Senden fehlgeschlagen: " + String(err.message)); }
+    } catch (err) { 
+        console.error("Submit Error:", err);
+        setAppError("Senden fehlgeschlagen: " + String(err.message)); 
+    }
     finally { setIsSending(false); }
   };
 
-  const loadSubmission = (sub) => {
+  const loadFromInbox = (sub) => {
     setTranscript(sub.text || "");
-    if (sub.category) { 
+    if (sub.category) {
         if (sub.category === "Nicht sicher") setSelectedCategory(null);
         else { const found = CATEGORIES.find(c => c.label === sub.category); setSelectedCategory(found || null); }
     }
@@ -288,71 +274,98 @@ export default function App() {
     setActiveClientName(String(sub.name || "Gast"));
     setWebsiteUrl(sub.website || "");
     setSocialUrl(sub.social || "");
-    setStep(2);
-    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
+    setStep(2); 
+    setTimeout(() => { categorySectionRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
   };
 
-  const cleanJsonResponse = (rawText) => {
-    if (!rawText) return null;
-    let cleaned = rawText.trim();
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) cleaned = match[0];
-    return cleaned;
-  };
-
-  const generateDNA = async () => {
+  const handleDNAAnalyse = async () => {
     setIsGenerating(true); setStep(3); setAppError(null);
     try {
-      const payload = {
+      const data = await callAI({
         systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${companySize}, ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}\nInput: ${transcript}` }] }],
+        contents: [{ parts: [{ text: `Input: ${transcript}\nFirmengröße: ${companySize}\nBereich: ${selectedCategory?.label || "Nicht sicher"}` }] }],
         generationConfig: { responseMimeType: "application/json" }
-      };
-      const data = await callAI(payload);
-      let text = data.candidates[0].content.parts[0].text.trim();
-      setOutputJson(JSON.parse(cleanJsonResponse(text)));
+      });
+      const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      setOutputJson(JSON.parse(cleanJsonResponse(rawJson)));
       setStep(4);
-    } catch (e) { setAppError(String(e.message)); setStep(2); }
+    } catch (err) { setAppError(String(err.message)); setStep(2); }
     finally { setIsGenerating(false); }
   };
 
-  const generateStrategy = async () => {
+  const handleStrategyAnalyse = async () => {
     setIsGeneratingStrategy(true);
     try {
-      const payload = {
+      const data = await callAI({
         systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
-      };
-      const data = await callAI(payload);
-      const jsonResponse = JSON.parse(cleanJsonResponse(data.candidates[0].content.parts[0].text));
-      setStrategyReport(String(jsonResponse.report));
-    } catch (e) { setAppError("Bericht-Fehler: " + String(e.message)); } 
+        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInterview: ${transcript}` }] }]
+      });
+      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
+      setStrategyReport(String(res.report));
+    } catch (err) { setAppError("Bericht-Fehler: " + String(err.message)); } 
     finally { setIsGeneratingStrategy(false); }
   };
-  
+
   const generateHooks = async () => {
     setIsGeneratingHooks(true);
     try {
-      const payload = {
+      const data = await callAI({
         systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
         contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
         generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
-      };
-      const data = await callAI(payload);
+      });
       const raw = data.candidates[0].content.parts[0].text;
       setSocialHooks(JSON.parse(cleanJsonResponse(raw)));
     } catch (e) { setAppError(String(e.message)); }
     finally { setIsGeneratingHooks(false); }
   };
 
+  // --- EFFECTS ---
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'client') setAppMode('client');
+    
+    // Auth Listener Logik aktualisiert für authReady State
+    if (auth) {
+        const initAuth = async () => {
+            try {
+                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+                    await signInWithCustomToken(auth, window.__initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { console.error("Initial Auth Error:", e); }
+        };
+        initAuth();
+        
+        const unsubscribe = onAuthStateChanged(auth, (u) => {
+            setUser(u);
+            setAuthReady(true); // Auth ist fertig, Button kann aktiv werden
+        });
+        return () => unsubscribe();
+    } else {
+        // Fallback falls kein Auth Service (sollte online nicht passieren)
+        setAuthReady(true); 
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!db || !user || !isAdminLoggedIn) return;
+    try {
+      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
+      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      }, (err) => {
+        console.error("Sync Error:", err);
+      });
+      return () => unsubscribe();
+    } catch (err) { console.error("Firestore Sync Error", err); }
+  }, [user, isAdminLoggedIn]);
+
   // --- RENDER ---
-  const copyText = (t) => { navigator.clipboard.writeText(t); setCopied(true); setTimeout(()=>setCopied(false), 2000); };
-  const copyMagicLink = () => {
-    const url = window.location.href.split('?')[0] + '?view=client';
-    navigator.clipboard.writeText(url);
-    setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
-  };
-  
+
   if (appMode === 'select') return (
     <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
       <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
@@ -368,7 +381,7 @@ export default function App() {
         <button onClick={() => setAppMode('login')} className="group bg-[#2c233e]/90 p-16 rounded-[4rem] text-center shadow-2xl transition-all duration-300 text-white">
           <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><Briefcase className="w-10 h-10 text-white" /></div>
           <h2 className="text-3xl font-bold mb-3">Agentur-Dashboard</h2>
-          <p className="opacity-40 font-medium text-sm">Analyse, Base44 & Strategie.</p>
+          <p className="opacity-40 font-medium text-sm">Analyse & Strategie.</p>
         </button>
       </div>
     </div>
@@ -455,11 +468,12 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest">KI schreibt Nachricht...</p></div>}
+                  {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest text-[#2c233e]">KI schreibt Nachricht...</p></div>}
                   <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
                   <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
                     <button 
                         onClick={handleClientSubmit} 
+                        // WICHTIG: Button disabled wenn Auth noch nicht fertig (authReady) oder Input fehlt
                         disabled={isSending || !authReady || !transcript || !clientName} 
                         className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all"
                     >
