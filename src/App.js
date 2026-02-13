@@ -25,6 +25,7 @@ import {
 
 let app, auth, db;
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
+// Garantiert einen sauberen Pfad für Firebase ohne störende Schrägstriche
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 try {
@@ -37,7 +38,7 @@ try {
       db = getFirestore(app);
   }
 } catch (e) {
-  console.warn("Firebase Initialization Error:", e);
+  console.error("Firebase Initialization Error:", e);
 }
 
 const ADMIN_PIN = "1704"; 
@@ -64,7 +65,7 @@ const INTERVIEW_QUESTIONS = [
   { id: "goals", title: "Deine Ziele", text: "Was ist dein wichtigstes Ziel mit Social Media?" },
   { id: "tone", title: "Dein Vibe", text: "Wie soll deine Marke wirken? Was passt GAR NICHT zu dir?" },
   { id: "content", title: "Deine Themen", text: "Welche Inhalte kannst du regelmäßig liefern? Gibt es feste Themen?" },
-  { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
+  { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispielen?" }
 ];
 
 const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Format: REINES JSON.`;
@@ -83,7 +84,6 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [loginError, setLoginError] = useState(false);
   
-  // Workspace Data
   const [step, setStep] = useState(1);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -91,21 +91,18 @@ export default function App() {
   const [companySize, setCompanySize] = useState("");
   const [transcript, setTranscript] = useState("");
   
-  // Status
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
   const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
   const [appError, setAppError] = useState(null);
 
-  // Results
   const [outputJson, setOutputJson] = useState(null);
   const [socialHooks, setSocialHooks] = useState(null);
   const [strategyReport, setStrategyReport] = useState(null);
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // Client Input
   const [clientName, setClientName] = useState("");
   const [clientCompany, setClientCompany] = useState("");
   const [clientCategory, setClientCategory] = useState(null);
@@ -122,7 +119,7 @@ export default function App() {
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
 
-  // --- ACTIONS & LOGIK (Müssen vor den Returns stehen!) ---
+  // --- ACTIONS & LOGIC ---
 
   const copySimpleText = (text, callback) => {
     if (!text) return;
@@ -150,6 +147,7 @@ export default function App() {
     return cleaned;
   };
 
+  // callAI mit integrierter Retry-Logik (Exponential Backoff für 429)
   const callAI = async (payload, maxRetries = 7) => {
     const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
     const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
@@ -159,6 +157,7 @@ export default function App() {
             const res = await fetch(PROXY_URL, {
                 method: "POST", 
                 headers: { "Content-Type": "application/json" },
+                // FIX: Payload wird direkt gespreaded für Backend-Kompatibilität (kein "payload" Key)
                 body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
             });
 
@@ -239,7 +238,7 @@ export default function App() {
     if (!clientName.trim() || !transcript.trim()) return;
     setIsSending(true);
     try {
-      if (!db) throw new Error("Datenbank nicht verfügbar");
+      if (!db) throw new Error("Datenbank nicht verfügbar - Firebase Init prüfen.");
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
         name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
@@ -305,36 +304,25 @@ export default function App() {
     finally { setIsGeneratingHooks(false); }
   };
 
-  // --- 1. AUTH ---
+  // --- EFFECTS ---
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('view') === 'client') setAppMode('client');
     if (auth) {
         const initAuth = async () => {
             try {
-                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) await signInWithCustomToken(auth, window.__initial_auth_token);
-                else await signInAnonymously(auth);
+                if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+                    await signInWithCustomToken(auth, window.__initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
             } catch (e) { console.error("Auth Error", e); }
         };
         initAuth();
-        return onAuthStateChanged(auth, (u) => setUser(u));
+        return onAuthStateChanged(auth, setUser);
     }
   }, []);
-
-  // --- 2. FIRESTORE SYNC ---
-  useEffect(() => {
-    if (!db || !user || !isAdminLoggedIn) return;
-    try {
-      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSubmissions(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-      }, (err) => {
-        console.error("Firestore Error:", err);
-      });
-      return () => unsubscribe();
-    } catch (err) { console.error("Firestore Init Error", err); }
-  }, [user, isAdminLoggedIn]);
 
   // --- RENDER ---
 
@@ -363,8 +351,12 @@ export default function App() {
     <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
       <form onSubmit={(e) => { 
         e.preventDefault(); 
-        if(pinInput === ADMIN_PIN) { setIsAdminLoggedIn(true); setAppMode('agency'); } 
-        else setLoginError(true); 
+        if(pinInput === ADMIN_PIN) {
+          setIsAdminLoggedIn(true);
+          setAppMode('agency'); 
+        } else {
+          setLoginError(true);
+        }
       }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
         <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
         <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
@@ -385,8 +377,8 @@ export default function App() {
           <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60">
             <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
             <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
-            <p className="text-xl opacity-60 mb-10">Nachricht wurde sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Startseite</button>
+            <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
+            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Zur Startseite</button>
           </div>
         ) : (
           <>
@@ -420,7 +412,6 @@ export default function App() {
                       <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
                 </div>
                 <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
                   <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
@@ -476,7 +467,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="mt-16 pt-16 border-t border-[#2c233e]/5">
+            <div className="mt-24" ref={categorySectionRef}>
               <h1 className="text-4xl font-bold mb-8">Analyse Basis</h1>
               <div className="grid grid-cols-2 gap-6">{CATEGORIES.map(c => <button key={c.id} onClick={() => { setSelectedCategory(c); setStep(2); }} className={`p-8 rounded-[3rem] text-left transition-all ${selectedCategory?.id === c.id ? 'bg-[#2c233e] text-white' : 'bg-white/40 hover:bg-white'}`}><c.Icon className="w-8 h-8 mb-4" /><div className="font-bold text-xl">{c.label}</div></button>)}</div>
             </div>
