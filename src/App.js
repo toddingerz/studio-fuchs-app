@@ -24,18 +24,17 @@ import {
 // =================================================================
 
 let app, auth, db;
+// FIX: appId bereinigen, um Pfad-Segment-Fehler in Firebase zu verhindern (Regel 1)
 const rawAppId = typeof __app_id !== 'undefined' ? String(__app_id) : 'brand-dna-studio-fuchs-live';
-// Garantiert einen sauberen Pfad für Firebase ohne störende Schrägstriche
 const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 try {
-  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-  const firebaseConfig = JSON.parse(configStr);
-  
-  if (Object.keys(firebaseConfig).length > 0) {
-      app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-      auth = getAuth(app);
-      db = getFirestore(app);
+  const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+  if (configStr) {
+    const firebaseConfig = JSON.parse(configStr);
+    app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+    auth = getAuth(app);
+    db = getFirestore(app);
   }
 } catch (e) {
   console.error("Firebase Initialization Error:", e);
@@ -65,11 +64,11 @@ const INTERVIEW_QUESTIONS = [
   { id: "goals", title: "Deine Ziele", text: "Was ist dein wichtigstes Ziel mit Social Media?" },
   { id: "tone", title: "Dein Vibe", text: "Wie soll deine Marke wirken? Was passt GAR NICHT zu dir?" },
   { id: "content", title: "Deine Themen", text: "Welche Inhalte kannst du regelmäßig liefern? Gibt es feste Themen?" },
-  { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispielen?" }
+  { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
 ];
 
 const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Format: REINES JSON.`;
-const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine "Freystil Sales"-Analyse direkt an den Kunden. Antworte im JSON Format mit einem Feld "report".`;
+const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine ehrliche "Freystil Sales"-Analyse direkt an den Kunden. Antworte im JSON Format mit einem Feld "report".`;
 
 // =================================================================
 // APP COMPONENT
@@ -119,7 +118,7 @@ export default function App() {
   const animationFrameRef = useRef(null);
   const categorySectionRef = useRef(null);
 
-  // --- ACTIONS & LOGIC ---
+  // --- ACTIONS & LOGIK ---
 
   const copySimpleText = (text, callback) => {
     if (!text) return;
@@ -147,7 +146,6 @@ export default function App() {
     return cleaned;
   };
 
-  // callAI mit integrierter Retry-Logik (Exponential Backoff für 429)
   const callAI = async (payload, maxRetries = 7) => {
     const isLocal = window.location.hostname.includes('localhost') || window.location.hostname.includes('googleusercontent');
     const delays = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
@@ -157,7 +155,6 @@ export default function App() {
             const res = await fetch(PROXY_URL, {
                 method: "POST", 
                 headers: { "Content-Type": "application/json" },
-                // FIX: Payload wird direkt gespreaded für Backend-Kompatibilität (kein "payload" Key)
                 body: JSON.stringify({ model: "gemini-2.5-flash-preview-09-2025", ...payload })
             });
 
@@ -234,11 +231,22 @@ export default function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
   };
 
+  // FIX: Sorgen für Auth vor Datenbank-Schreibvorgang (Regel 3)
   const handleClientSubmit = async () => {
     if (!clientName.trim() || !transcript.trim()) return;
     setIsSending(true);
     try {
-      if (!db) throw new Error("Datenbank nicht verfügbar - Firebase Init prüfen.");
+      if (!db || !auth) throw new Error("Datenbank-Dienst nicht bereit.");
+      
+      // Sicherstellen, dass wir angemeldet sind (Regel 3)
+      if (!auth.currentUser) {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+              await signInAnonymously(auth);
+          }
+      }
+
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
         name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
         category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
@@ -467,7 +475,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="mt-24" ref={categorySectionRef}>
+            <div className="mt-16 pt-16 border-t border-[#2c233e]/5">
               <h1 className="text-4xl font-bold mb-8">Analyse Basis</h1>
               <div className="grid grid-cols-2 gap-6">{CATEGORIES.map(c => <button key={c.id} onClick={() => { setSelectedCategory(c); setStep(2); }} className={`p-8 rounded-[3rem] text-left transition-all ${selectedCategory?.id === c.id ? 'bg-[#2c233e] text-white' : 'bg-white/40 hover:bg-white'}`}><c.Icon className="w-8 h-8 mb-4" /><div className="font-bold text-xl">{c.label}</div></button>)}</div>
             </div>
