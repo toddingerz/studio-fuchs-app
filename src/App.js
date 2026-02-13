@@ -51,23 +51,26 @@ import {
 // 1. KONFIGURATION
 // =================================================================
 
+// Firebase Safe Init (Verhindert Absturz, wenn Config fehlt)
 let app;
 let auth;
 let db;
 
 try {
+  // Fallback für lokale Entwicklung/Build, falls Variable fehlt
   const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
   const firebaseConfig = JSON.parse(configStr);
+  
   if (Object.keys(firebaseConfig).length > 0) {
       app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
       auth = getAuth(app);
       db = getFirestore(app);
   }
 } catch (e) {
-  console.warn("Firebase Init skipped (Build/Dev mode)", e);
+  console.warn("Firebase Init skipped (Build mode)", e);
 }
 
-// PROXY ENDPOINT
+// WICHTIG: Aufruf geht an DEINEN Vercel Server, nicht direkt an Google
 const PROXY_URL = "/api/gemini"; 
 const MODEL_NAME = "gemini-2.5-flash-preview-09-2025";
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'brand-dna-studio-fuchs-live';
@@ -290,33 +293,36 @@ export default function App() {
     return cleaned;
   };
 
-  // --- PROXY API CALL ---
+  // --- PROXY API CALL (SICHER & VERCEL READY) ---
   const callProxyAPI = async (payload) => {
-    // Füge das Modell zum Body hinzu
-    const body = JSON.stringify({
-        model: MODEL_NAME,
-        ...payload
-    });
+    try {
+        const response = await fetch(PROXY_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: MODEL_NAME,
+                ...payload
+            })
+        });
 
-    const response = await fetch(PROXY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body
-    });
+        const data = await response.json();
 
-    const data = await response.json();
-
-    if (data.error === 'MISSING_API_KEY') {
-        throw new Error("SERVER CONFIG: GEMINI_API_KEY fehlt in Vercel.");
+        if (data.error === 'MISSING_API_KEY') {
+            throw new Error("API-Key fehlt auf dem Server. Bitte Variable in Vercel setzen.");
+        }
+        
+        if (!response.ok) {
+            throw new Error(data.error?.message || `Server Fehler: ${response.status}`);
+        }
+        
+        return data;
+    } catch (error) {
+        // Fallback: Wenn wir hier in der Vorschau sind (kein Backend), zeige freundlichen Hinweis
+        if (window.location.hostname.includes("usercontent.goog")) {
+            throw new Error("Vorschau-Modus: Analyse geht nur in der echten App (wegen Backend).");
+        }
+        throw error;
     }
-    
-    if (!response.ok) {
-        // Leite detaillierte Google Fehler weiter oder generischen Fehler
-        const msg = data.error?.message || `HTTP Fehler ${response.status}`;
-        throw new Error(msg);
-    }
-
-    return data;
   };
 
 
@@ -434,7 +440,7 @@ export default function App() {
       setStep(4);
     } catch (err) { 
         console.error("Analyse Fehler:", err);
-        setAppError("KI Analyse fehlgeschlagen: " + err.message); 
+        setAppError("Analyse Fehler: " + err.message); 
         setStep(2); 
     }
     finally { setIsGenerating(false); }
@@ -635,7 +641,7 @@ export default function App() {
             <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] mb-8 text-[#e32338] flex items-center gap-3"><Inbox className="w-5 h-5" /> Live Posteingang ({submissions.length})</h2>
             
             {activeClientName && (
-                <div className="mb-8 animate-in slide-in-from-left duration-500 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl">
+                <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left">
                     <Sparkles className="w-4 h-4" /> Workspace: Daten von "{activeClientName}" aktiv
                     <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button>
                 </div>
@@ -707,7 +713,7 @@ export default function App() {
           <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
              <div className="flex justify-between items-center gap-8">
                 <div><h1 className="text-5xl font-bold tracking-tight mb-2">Analyse <span className="text-[#e32338]">Fertig.</span></h1><p className="text-xs font-bold opacity-30 uppercase tracking-[0.3em]">Ready for Base44 & Freystil Sales</p></div>
-                <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setSocialHooks(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => { copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON (Base44)'}</button></div>
+                <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setSocialHooks(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Inbox</button><button onClick={() => { copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON (Base44)'}</button></div>
              </div>
              
              {/* STRATEGIE REPORT KARTE */}
