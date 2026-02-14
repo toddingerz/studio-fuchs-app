@@ -1,580 +1,652 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, collection, addDoc, doc, getDoc, updateDoc, onSnapshot, serverTimestamp, query, orderBy } from 'firebase/firestore';
 import { 
-  getAuth, 
-  signInAnonymously, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot
-} from 'firebase/firestore';
-import { 
-  ChevronLeft, Copy, Check, Loader2, FileJson, Store, HeartPulse, Wrench, User, 
-  Sparkles, HelpCircle, Lightbulb, Globe, Mic, Send, Briefcase, Inbox, ArrowRight, Square, 
-  UploadCloud, Lock, Unlock, FileText, Pause, Play, Trash2, AlertCircle, Users, LayoutGrid
+  Activity, 
+  Send, 
+  Lock, 
+  Database, 
+  Cpu, 
+  FileText, 
+  Target, 
+  Zap, 
+  ChevronRight, 
+  CheckCircle,
+  AlertCircle,
+  LayoutDashboard,
+  LogOut,
+  Sparkles,
+  Search
 } from 'lucide-react';
 
-// =================================================================
-// 1. STABILE FIREBASE CONFIG (VERCEL & LOCAL)
-// =================================================================
+// --- CONFIGURATION ---
+// BITTE HIER DEINE FIREBASE CONFIG EINFÜGEN
+// Kopiere das Objekt aus deiner Firebase Console -> Project Settings -> General -> Web App
+const firebaseConfig = JSON.parse(__firebase_config);
 
-const firebaseConfig = {
-  apiKey: "AIzaSyCd9YnXBiLct5RFgqqDCnvIODV5dVtKkmI",
-  authDomain: "studio-fuchs.firebaseapp.com",
-  projectId: "studio-fuchs",
-  storageBucket: "studio-fuchs.firebasestorage.app",
-  messagingSenderId: "743239245515",
-  appId: "1:743239245515:web:b32ec9724c0dcc853b454e",
-  measurementId: "G-SNL32ZC6S2"
-};
-
-const appId = "brand-dna-studio-fuchs-live"; // Feste App ID für konsistente Pfade
-
-// Initialisierung (Singleton Pattern)
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// --- GLOBAL VARIABLES & INIT ---
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+// Use the global appId provided by the environment, fallback if needed
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'brand-dna-studio-fuchs-live';
 
-// Debug Log (nur einmalig)
-console.log("Firebase initialized:", { dbReady: !!db, authReady: !!auth, projectId: firebaseConfig.projectId });
+const PIN_CODE = "1234"; // Simple Admin PIN
+const COLLECTION_NAME = "submissions";
 
-const ADMIN_PIN = "1704"; 
-const PROXY_URL = "/api/gemini"; 
+// --- GEMINI API HELPER ---
+// Uses the direct API for the preview environment.
+const callGemini = async (prompt, systemInstruction = "") => {
+  const apiKey = ""; // API Key injected by environment
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
-// =================================================================
-// DATEN & PROMPTS
-// =================================================================
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 2000,
+    }
+  };
 
-const COMPANY_SIZES = ["Nur ich (Solo)", "1-5 Mitarbeiter", "6-20 Mitarbeiter", "21-100 Mitarbeiter", "Über 100 Mitarbeiter"];
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) throw new Error(`Gemini API Error: ${response.status}`);
+    
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Keine Antwort generiert.";
+  } catch (error) {
+    console.error("AI Error:", error);
+    throw error;
+  }
+};
 
-const CATEGORIES = [
-  { id: "local", label: "Local Service Business", Icon: Store, examples: ["Friseur", "Tattoo", "Physio"] },
-  { id: "med", label: "Medizin / Gesundheit", Icon: HeartPulse, examples: ["Arzt", "Zahnarzt", "Pflege"] },
-  { id: "craft", label: "Handwerk / Produktion", Icon: Wrench, examples: ["Manufaktur", "Bau", "E-Com"] },
-  { id: "brand", label: "Personal Brand", Icon: User, examples: ["Coach", "Berater", "Speaker"] }
-];
+// --- PROMPTS ---
+const PROMPTS = {
+  clientImmediate: (data) => `
+    Analysiere diese Brand-Daten und erstelle eine KURZE, wertvolle Sofort-Ausgabe für den Kunden.
+    Daten: Name: ${data.name}, Firma: ${data.company}, Branche: ${data.category}, Text: ${data.transcript}.
+    
+    Output Format (Markdown):
+    ## 🧬 Mini Brand Pulse
+    **1. Positionierungspotenzial:** [Ein Satz]
+    **2. Content-Richtung:** [Zwei konkrete Themen-Ideen]
+    **3. Strategischer Impuls:** [Ein "Aha"-Moment oder Tipp]
+    
+    Halte es ermutigend, professionell und kurz.
+  `,
+  brandDNA: (data) => `
+    Extrahiere die tiefere Brand DNA aus diesen Daten für Base44.
+    Input: ${JSON.stringify(data)}
+    
+    Output MUSS valides JSON sein (ohne Markdown Code Blocks):
+    {
+      "core_understanding": "...",
+      "differentiation_factor": "...",
+      "customer_reality": "...",
+      "communication_boundaries": ["...", "..."],
+      "trust_signals": ["...", "..."],
+      "context_factors": "...",
+      "tone_of_voice": "..."
+    }
+    Interpretieren, verdichten, Behavioral Brand Logic anwenden.
+  `,
+  contentHooks: (data) => `
+    Erstelle 5 virale, psychologisch fundierte Content Hooks basierend auf dieser Brand DNA.
+    Branche: ${data.category}. Kontext: ${data.transcript}.
+    
+    Output Format: Liste mit 5 Bulletpoints. Konkret, "Scroll-Stopping".
+  `,
+  salesAnalysis: (data) => `
+    Führe eine strategische Sales Intelligence Analyse durch.
+    Input: ${data.transcript} | ${data.website}
+    
+    Analysiere:
+    - Positionierungs-Lücken
+    - Conversion-Hebel
+    - Emotionale Trigger im Text
+    
+    Output Format: Kurzer, knallharter Strategie-Report (Markdown). Keine Floskeln.
+  `
+};
 
-const INTERVIEW_QUESTIONS = [
-  { id: "brand_core", title: "Wer bist du?", text: "Erzähl kurz: Wer bist du und was machst du genau?" },
-  { id: "target", title: "Deine Kunden", text: "Wer ist deine wichtigste Zielgruppe? Welches Problem löst du für sie?" },
-  { id: "diff", title: "Dein Unterschied", text: "Was unterscheidet dich von anderen in deinem Bereich?" },
-  { id: "offer", title: "Dein Angebot", text: "Was ist dein Hauptangebot aktuell?" },
-  { id: "goals", title: "Deine Ziele", text: "Was ist dein wichtigstes Ziel mit Social Media?" },
-  { id: "tone", title: "Dein Vibe", text: "Wie soll deine Marke wirken? Was passt GAR NICHT zu dir?" },
-  { id: "content", title: "Deine Themen", text: "Welche Inhalte kannst du regelmäßig liefern? Gibt es feste Themen?" },
-  { id: "proof", title: "Vertrauen", text: "Gibt es Referenzen, Kundenstimmen oder Beispiele?" }
-];
+// --- COMPONENTS ---
 
-const JSON_SYSTEM_INSTRUCTION = `Du bist eine strategische Brand DNA Engine für Studio Fuchs. Extrahiere aus Input eine präzise Marken-Identität nach Base44. Format: REINES JSON.`;
-const STRATEGY_SYSTEM_INSTRUCTION = `Du bist Thorsten Fuchs von designstudiofuchs.de, Sales-Mail-Architekt. Erstelle eine ehrliche "Freystil Sales"-Analyse direkt an den Kunden. Antworte im JSON Format mit einem Feld "report".`;
+// 1. Debug Panel
+const DebugPanel = ({ user, dbStatus, logs }) => (
+  <div className="fixed bottom-0 left-0 right-0 bg-black/90 text-green-500 text-xs p-2 font-mono border-t border-green-900 z-50 flex justify-between items-center opacity-70 hover:opacity-100 transition-opacity">
+    <div className="flex gap-4">
+      <span><span className="text-gray-500">AUTH:</span> {user ? 'ANON_USER' : 'OFFLINE'}</span>
+      <span><span className="text-gray-500">UID:</span> {user?.uid?.slice(0, 8)}...</span>
+      <span><span className="text-gray-500">DB:</span> {dbStatus}</span>
+    </div>
+    <div className="flex gap-4">
+       <span><span className="text-gray-500">LAST LOG:</span> {logs[0] || 'Ready'}</span>
+    </div>
+  </div>
+);
 
-// =================================================================
-// APP COMPONENT
-// =================================================================
+// 2. Client Portal
+const ClientPortal = ({ onSubmit, loading, result }) => {
+  const [formData, setFormData] = useState({
+    name: '', company: '', teamSize: '1-5', category: '', website: '', social: '', transcript: ''
+  });
 
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+
+  if (result) {
+    return (
+      <div className="max-w-2xl mx-auto p-8 animate-fade-in">
+        <div className="bg-slate-800/50 backdrop-blur-xl border border-slate-700 rounded-3xl p-8 shadow-2xl">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 bg-green-500/20 rounded-full text-green-400">
+              <CheckCircle size={32} />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-white">Daten empfangen</h2>
+              <p className="text-slate-400">Deine erste KI-Analyse ist bereit.</p>
+            </div>
+          </div>
+          
+          <div className="bg-slate-900/50 rounded-xl p-6 border border-slate-700/50 prose prose-invert prose-p:text-slate-300">
+             <div dangerouslySetInnerHTML={{ __html: result.replace(/\n/g, '<br/>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }} />
+          </div>
+
+          <div className="mt-8 text-center">
+            <p className="text-slate-500 text-sm mb-4">Wir melden uns in Kürze mit den Deep-Dive Ergebnissen.</p>
+            <button onClick={() => window.location.reload()} className="text-indigo-400 hover:text-indigo-300 text-sm">
+              Neue Anfrage starten
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-xl mx-auto">
+      <div className="text-center mb-10">
+        <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-200 via-purple-200 to-indigo-200 mb-2">
+          Brand DNA Collector
+        </h1>
+        <p className="text-slate-400">Designstudio Fuchs Intelligence System</p>
+      </div>
+
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit(formData); }} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <input required name="name" placeholder="Dein Name" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange} />
+          <input required name="company" placeholder="Firma" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange} />
+        </div>
+        
+        <div className="grid grid-cols-2 gap-4">
+          <select name="teamSize" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange}>
+            <option value="1">Solo</option>
+            <option value="2-10">2-10 Mitarbeiter</option>
+            <option value="11-50">11-50 Mitarbeiter</option>
+            <option value="50+">50+ Mitarbeiter</option>
+          </select>
+          <input required name="category" placeholder="Branche / Kategorie" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange} />
+        </div>
+
+        <input name="website" placeholder="Website URL" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange} />
+        <input name="social" placeholder="Wichtigster Social Link" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition" onChange={handleChange} />
+
+        <div className="relative">
+          <textarea required name="transcript" rows="6" placeholder="Erzähl uns von deiner Marke: Mission, Probleme, Ziele... (Oder Transcript Paste)" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition resize-none" onChange={handleChange}></textarea>
+          <div className="absolute bottom-3 right-3 text-slate-500 text-xs flex items-center gap-1">
+            <Sparkles size={12} /> AI Ready
+          </div>
+        </div>
+
+        <button disabled={loading} type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium py-4 rounded-xl shadow-lg shadow-indigo-900/20 transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          {loading ? (
+            <span className="animate-pulse">Analysiere Daten...</span>
+          ) : (
+            <>
+              Absenden & Analyse erhalten <ChevronRight size={18} />
+            </>
+          )}
+        </button>
+      </form>
+    </div>
+  );
+};
+
+// 3. Admin Dashboard
+const AdminDashboard = ({ submissions, onViewDetail }) => (
+  <div className="max-w-6xl mx-auto">
+    <div className="flex justify-between items-center mb-8">
+      <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+        <LayoutDashboard className="text-indigo-400" /> 
+        Submissions Inbox
+      </h2>
+      <div className="text-slate-400 text-sm">
+        {submissions.length} Einträge
+      </div>
+    </div>
+
+    <div className="grid gap-4">
+      {submissions.length === 0 && (
+        <div className="text-center py-20 text-slate-500 bg-slate-800/30 rounded-2xl border border-slate-800">
+          Keine Einreichungen gefunden.
+        </div>
+      )}
+      {submissions.map((sub) => (
+        <div key={sub.id} onClick={() => onViewDetail(sub)} className="bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-2xl p-6 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-xl group">
+          <div className="flex justify-between items-start">
+            <div className="flex gap-4">
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold ${sub.dna_json ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700 text-slate-400'}`}>
+                {sub.company?.charAt(0) || '?'}
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white group-hover:text-indigo-300 transition-colors">{sub.company}</h3>
+                <p className="text-slate-400 text-sm">{sub.name} • {sub.category}</p>
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              <span className="text-xs text-slate-500 font-mono">
+                {sub.timestamp?.toDate().toLocaleDateString('de-DE')}
+              </span>
+              {sub.dna_json && (
+                <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs rounded-full border border-green-500/20 flex items-center gap-1">
+                  <Activity size={10} /> DNA Analyzed
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// 4. Admin Detail View
+const AdminDetail = ({ submission, onBack, onAction, actionLoading }) => {
+  const [activeTab, setActiveTab] = useState('overview');
+
+  const cleanJSON = (text) => {
+      if(!text) return null;
+      try {
+          return JSON.stringify(JSON.parse(text), null, 2);
+      } catch (e) {
+          return text;
+      }
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto h-[calc(100vh-100px)] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6 shrink-0">
+        <button onClick={onBack} className="text-slate-400 hover:text-white flex items-center gap-1 text-sm">
+          <ChevronRight className="rotate-180" size={16} /> Zurück
+        </button>
+        <div className="flex gap-2">
+            <span className="px-3 py-1 bg-slate-800 rounded-full text-xs text-slate-400 border border-slate-700">ID: {submission.id}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-12 gap-6 h-full overflow-hidden">
+        {/* Left: Data Source */}
+        <div className="col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-6 overflow-y-auto custom-scrollbar">
+          <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Source Data</h3>
+          
+          <div className="space-y-6">
+            <div>
+              <label className="block text-slate-500 text-xs mb-1">Company</label>
+              <div className="text-white font-medium text-lg">{submission.company}</div>
+              <div className="text-indigo-400 text-sm">{submission.website}</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+               <div>
+                  <label className="block text-slate-500 text-xs mb-1">Contact</label>
+                  <div className="text-slate-200 text-sm">{submission.name}</div>
+               </div>
+               <div>
+                  <label className="block text-slate-500 text-xs mb-1">Size</label>
+                  <div className="text-slate-200 text-sm">{submission.teamSize}</div>
+               </div>
+            </div>
+
+            <div>
+              <label className="block text-slate-500 text-xs mb-1">Transcript / Input</label>
+              <div className="bg-slate-800/50 p-3 rounded-lg text-slate-300 text-sm leading-relaxed border border-slate-700/50">
+                {submission.transcript}
+              </div>
+            </div>
+            
+             <div>
+              <label className="block text-slate-500 text-xs mb-1">Initial Client Output</label>
+              <div className="p-3 rounded-lg text-slate-400 text-xs leading-relaxed border border-slate-800 italic">
+                {submission.clientAnalysis?.slice(0, 150)}...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: AI Engine */}
+        <div className="col-span-8 flex flex-col gap-4 h-full">
+          {/* Action Bar */}
+          <div className="bg-slate-800/50 border border-slate-700/50 p-2 rounded-xl flex gap-2 shrink-0">
+             <button 
+                onClick={() => setActiveTab('dna')}
+                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${activeTab === 'dna' ? 'bg-indigo-600 text-white shadow-lg' : 'hover:bg-slate-700 text-slate-400'}`}
+             >
+               <Cpu size={16} /> Brand DNA
+             </button>
+             <button 
+                onClick={() => setActiveTab('hooks')}
+                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${activeTab === 'hooks' ? 'bg-pink-600 text-white shadow-lg' : 'hover:bg-slate-700 text-slate-400'}`}
+             >
+               <Zap size={16} /> Content Hooks
+             </button>
+             <button 
+                onClick={() => setActiveTab('sales')}
+                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${activeTab === 'sales' ? 'bg-emerald-600 text-white shadow-lg' : 'hover:bg-slate-700 text-slate-400'}`}
+             >
+               <Target size={16} /> Sales Intel
+             </button>
+          </div>
+
+          {/* Content Area */}
+          <div className="flex-1 bg-slate-900 border border-slate-800 rounded-2xl p-6 overflow-y-auto relative custom-scrollbar">
+            
+            {activeTab === 'dna' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-white">Brand DNA Extraction</h3>
+                    <button 
+                        onClick={() => onAction('dna_json', PROMPTS.brandDNA(submission))}
+                        disabled={actionLoading}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                    >
+                        {actionLoading ? <Activity className="animate-spin" size={16} /> : <Sparkles size={16} />} 
+                        {submission.dna_json ? 'Regenerate DNA' : 'Generate DNA'}
+                    </button>
+                </div>
+                {submission.dna_json ? (
+                   <pre className="bg-black/50 p-4 rounded-xl border border-indigo-900/30 text-indigo-300 font-mono text-sm overflow-x-auto">
+                      {cleanJSON(submission.dna_json)}
+                   </pre>
+                ) : (
+                   <div className="h-40 flex items-center justify-center text-slate-600 border border-dashed border-slate-800 rounded-xl">No DNA extracted yet.</div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'hooks' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-white">Viral Content Hooks</h3>
+                    <button 
+                        onClick={() => onAction('hooks', PROMPTS.contentHooks(submission))}
+                        disabled={actionLoading}
+                        className="bg-pink-600 hover:bg-pink-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                    >
+                         {actionLoading ? <Activity className="animate-spin" size={16} /> : <Zap size={16} />} 
+                         Generate Hooks
+                    </button>
+                </div>
+                {submission.hooks ? (
+                    <div className="bg-slate-800/30 p-6 rounded-xl border border-slate-700 prose prose-invert max-w-none prose-li:text-pink-100 prose-strong:text-pink-400">
+                        <div dangerouslySetInnerHTML={{ __html: submission.hooks.replace(/\n/g, '<br/>') }} />
+                    </div>
+                ) : (
+                   <div className="h-40 flex items-center justify-center text-slate-600 border border-dashed border-slate-800 rounded-xl">No Hooks generated yet.</div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'sales' && (
+              <div className="space-y-4">
+                 <div className="flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-white">Strategic Sales Analysis</h3>
+                    <button 
+                        onClick={() => onAction('sales_analysis', PROMPTS.salesAnalysis(submission))}
+                        disabled={actionLoading}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                    >
+                        {actionLoading ? <Activity className="animate-spin" size={16} /> : <Target size={16} />} 
+                        Run Analysis
+                    </button>
+                </div>
+                 {submission.sales_analysis ? (
+                    <div className="bg-slate-800/30 p-6 rounded-xl border border-slate-700 prose prose-invert max-w-none prose-headings:text-emerald-400">
+                        <div dangerouslySetInnerHTML={{ __html: submission.sales_analysis.replace(/\n/g, '<br/>').replace(/\*\*(.*?)\*\*/g, '<strong class="text-emerald-200">$1</strong>').replace(/### (.*)/g, '<h3 class="text-lg font-bold mt-4 mb-2">$1</h3>') }} />
+                    </div>
+                ) : (
+                   <div className="h-40 flex items-center justify-center text-slate-600 border border-dashed border-slate-800 rounded-xl">No Analysis run yet.</div>
+                )}
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN APP COMPONENT ---
 export default function App() {
-  const [appMode, setAppMode] = useState('select'); 
   const [user, setUser] = useState(null);
-  const [authReady, setAuthReady] = useState(false);
+  const [view, setView] = useState('client'); // client, admin-login, admin-dashboard, admin-detail
+  const [pin, setPin] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [dbStatus, setDbStatus] = useState('Init...');
   const [submissions, setSubmissions] = useState([]);
-  const [activeClientName, setActiveClientName] = useState(null);
-  const [pinInput, setPinInput] = useState("");
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [loginError, setLoginError] = useState(false);
-  
-  // Workspace
-  const [step, setStep] = useState(1);
-  const [selectedCategory, setSelectedCategory] = useState(null);
-  const [websiteUrl, setWebsiteUrl] = useState("");
-  const [socialUrl, setSocialUrl] = useState("");
-  const [companySize, setCompanySize] = useState("");
-  const [transcript, setTranscript] = useState("");
-  
-  // Status & Locking
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isGeneratingHooks, setIsGeneratingHooks] = useState(false);
-  const [isGeneratingStrategy, setIsGeneratingStrategy] = useState(false);
-  const [appError, setAppError] = useState(null);
-  
-  // KI Request Lock
-  const aiRequestLock = useRef(false); 
+  const [currentSubmission, setCurrentSubmission] = useState(null);
+  const [submissionResult, setSubmissionResult] = useState(null);
 
-  // Results
-  const [outputJson, setOutputJson] = useState(null);
-  const [socialHooks, setSocialHooks] = useState(null);
-  const [strategyReport, setStrategyReport] = useState(null);
-  const [copied, setCopied] = useState(false);
-  const [linkCopied, setLinkCopied] = useState(false);
+  // Logger
+  const log = (msg) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 4)]);
 
-  // Client Input
-  const [clientName, setClientName] = useState("");
-  const [clientCompany, setClientCompany] = useState("");
-  const [clientCategory, setClientCategory] = useState(null);
-  const [clientSubmitted, setClientSubmitted] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
-
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const audioContextRef = useRef(null);
-  const analyserRef = useRef(null);
-  const animationFrameRef = useRef(null);
-  const categorySectionRef = useRef(null);
-
-  // --- 1. AUTH LOGIK ---
+  // Auth & Init
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('view') === 'client') setAppMode('client');
+    const init = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+           await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+           await signInAnonymously(auth);
+        }
+      } catch (e) {
+        log(`Auth Error: ${e.message}`);
+      }
+    };
+    init();
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-        if (u) {
-            setUser(u);
-            setAuthReady(true);
-        } else {
-            // Wenn nicht eingeloggt, anonym anmelden
-            signInAnonymously(auth).catch(err => {
-                console.error("Anon Auth failed:", err);
-                setAppError("Anmeldung fehlgeschlagen. Bitte neu laden.");
-            });
-        }
+      setUser(u);
+      setDbStatus(u ? 'Connected' : 'Disconnected');
+      log(u ? `User logged in: ${u.uid}` : 'User logged out');
     });
     return () => unsubscribe();
   }, []);
 
-  // --- 2. FIRESTORE SYNC ---
+  // Fetch Submissions (Admin Only)
   useEffect(() => {
-    if (!db || !user || !isAdminLoggedIn) return;
-    try {
-      const submissionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
-      const unsubscribe = onSnapshot(submissionsRef, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSubmissions(data.sort((a, b) => b.timestamp - a.timestamp));
-      }, (err) => {
-        console.error("Firestore Read Error:", err);
-      });
-      return () => unsubscribe();
-    } catch (err) { console.error("Firestore Init Error", err); }
-  }, [user, isAdminLoggedIn]);
-
-  // --- API CALL (MIT BACKOFF & LOCK) ---
-  const callAI = async (payload, maxRetries = 5) => {
-    if (aiRequestLock.current) {
-        throw new Error("Bitte warten, eine Anfrage läuft bereits.");
-    }
-    aiRequestLock.current = true;
-
-    const delays = [1000, 2000, 4000, 8000, 16000];
-
-    try {
-        for (let i = 0; i <= maxRetries; i++) {
-            try {
-                // Relativer Pfad für Vercel (Online)
-                const res = await fetch(PROXY_URL, {
-                    method: "POST", 
-                    headers: { "Content-Type": "application/json" },
-                    // Flache Struktur für das Backend
-                    body: JSON.stringify({ 
-                        model: "gemini-2.5-flash-preview-09-2025", 
-                        ...payload 
-                    })
-                });
-
-                if (res.status === 429) {
-                    if (i < maxRetries) {
-                        await new Promise(r => setTimeout(r, delays[i]));
-                        continue;
-                    } else {
-                        throw new Error("Server überlastet (429). Bitte später versuchen.");
-                    }
-                }
-
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(String(err.message || err.error || `Fehler: ${res.status}`));
-                }
-
-                return await res.json();
-            } catch (innerError) {
-                if (i === maxRetries) throw innerError;
-                await new Promise(r => setTimeout(r, delays[i]));
-            }
-        }
-    } finally {
-        aiRequestLock.current = false;
-    }
-  };
-
-  // --- ACTIONS ---
-  
-  const copySimpleText = (text, callback) => {
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(() => { if(callback) callback(); });
-  };
-  
-  const copyMagicLink = () => {
-    const url = window.location.href.split('?')[0] + '?view=client';
-    navigator.clipboard.writeText(url);
-    setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000);
-  };
-
-  const cleanJsonResponse = (rawText) => {
-    if (!rawText) return null;
-    let cleaned = rawText.trim();
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) cleaned = match[0];
-    return cleaned;
-  };
-
-  const processAudio = async (blob) => {
-    setIsTranscribing(true); setAppError(null);
-    const reader = new FileReader();
-    reader.readAsDataURL(blob);
-    reader.onload = async () => {
-      try {
-        const cleanMime = blob.type.split(';')[0] || 'audio/webm';
-        const data = await callAI({ 
-            contents: [{ 
-                parts: [
-                    { text: "Transkribiere dieses Audio auf Deutsch." }, 
-                    { inlineData: { mimeType: cleanMime, data: reader.result.split(',')[1] } }
-                ] 
-            }] 
-        });
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) setTranscript(prev => prev ? prev + "\n" + text : text);
-      } catch (err) { setAppError(String(err.message)); }
-      finally { setIsTranscribing(false); }
-    };
-  };
-
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContextRef.current = new AudioContext();
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      source.connect(analyserRef.current);
-      const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-      const update = () => {
-        if(!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
-        setAudioLevel(dataArray.reduce((a,b)=>a+b)/dataArray.length);
-        animationFrameRef.current = requestAnimationFrame(update);
-      };
-      update();
-      mediaRecorderRef.current = new MediaRecorder(stream);
-      audioChunksRef.current = [];
-      mediaRecorderRef.current.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
-        processAudio(blob);
-        stream.getTracks().forEach(t => t.stop());
-      };
-      mediaRecorderRef.current.start();
-      setIsRecording(true); setIsPaused(false);
-    } catch (e) { setAppError("Mikrofon Fehler"); }
-  };
-
-  const togglePause = () => {
-      if(!mediaRecorderRef.current) return;
-      if(!isPaused) { 
-        mediaRecorderRef.current.stop(); 
-        setIsPaused(true); 
-        setAudioLevel(0);
-      } else { 
-        mediaRecorderRef.current.resume(); 
-        setIsPaused(false); 
-      }
-  };
-
-  const stopRecording = () => {
-      if(mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
-      setIsRecording(false); setIsPaused(false);
-      if(animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-  };
-
-  const handleClientSubmit = async () => {
-    if (!clientName.trim() || !transcript.trim()) return;
+    if (view !== 'admin-dashboard' || !user) return;
     
-    // Harte Validierung
-    if (!db) { setAppError("Interner Fehler: Datenbank nicht initialisiert."); return; }
-    if (!authReady || !user) { setAppError("Verbindung wird noch hergestellt..."); return; }
+    // Using global artifacts path structure
+    const q = query(
+        collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME),
+        orderBy('timestamp', 'desc')
+    );
+    
+    const unsub = onSnapshot(q, (snapshot) => {
+        const subs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setSubmissions(subs);
+        log(`Fetched ${subs.length} submissions`);
+    }, (error) => {
+        log(`Fetch Error: ${error.message}`);
+        setDbStatus('Error');
+    });
 
-    setIsSending(true);
-    setAppError(null);
+    return () => unsub();
+  }, [view, user]);
+
+  // Handlers
+  const handleClientSubmit = async (data) => {
+    if (!user) { alert("System connecting... please wait."); return; }
+    setLoading(true);
+    log("Processing client submission...");
+
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'submissions'), {
-        name: clientName, company: clientCompany, website: websiteUrl, social: socialUrl, 
-        category: clientCategory, companySize: companySize, text: transcript, timestamp: Date.now()
+      // 1. Generate Immediate Value (Mini Strategy)
+      const miniStrategy = await callGemini(PROMPTS.clientImmediate(data));
+      
+      // 2. Save to Firestore
+      // Adhering to artifacts path rule
+      const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME), {
+        ...data,
+        clientAnalysis: miniStrategy,
+        timestamp: serverTimestamp(),
+        status: 'new'
       });
-      setClientSubmitted(true);
-    } catch (err) { setAppError("Speichern fehlgeschlagen: " + String(err.message)); }
-    finally { setIsSending(false); }
-  };
-
-  const loadSubmission = (sub) => {
-    setTranscript(sub.text || "");
-    if (sub.category) { 
-        if (sub.category === "Nicht sicher") setSelectedCategory(null);
-        else { const found = CATEGORIES.find(c => c.label === sub.category); setSelectedCategory(found || null); }
+      
+      log(`Saved ID: ${docRef.id}`);
+      setSubmissionResult(miniStrategy);
+    } catch (e) {
+      log(`Error: ${e.message}`);
+      alert("Fehler bei der Verarbeitung. Bitte versuche es erneut.");
+    } finally {
+      setLoading(false);
     }
-    setCompanySize(sub.companySize || "");
-    setActiveClientName(String(sub.name || "Gast"));
-    setWebsiteUrl(sub.website || "");
-    setSocialUrl(sub.social || "");
-    setStep(2);
-    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100);
   };
 
-  const generateDNA = async () => {
-    if (isGenerating) return;
-    setIsGenerating(true); setStep(3); setAppError(null);
+  const handleAdminLogin = (e) => {
+    e.preventDefault();
+    if (pin === PIN_CODE) {
+      setView('admin-dashboard');
+      setPin('');
+    } else {
+      alert("Access Denied");
+    }
+  };
+
+  const handleAdminAction = async (field, prompt) => {
+    if (!currentSubmission) return;
+    setLoading(true);
+    log(`Running AI Action: ${field}...`);
+    
     try {
-      const data = await callAI({
-        systemInstruction: { parts: [{ text: JSON_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Input: ${transcript}\nFirma: ${companySize}\nBereich: ${selectedCategory?.label || "Unklar"}\nWeb: ${websiteUrl}` }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      setOutputJson(JSON.parse(cleanJsonResponse(rawText)));
-      setStep(4);
-    } catch (e) { setAppError(String(e.message)); setStep(2); }
-    finally { setIsGenerating(false); }
+        let result = await callGemini(prompt);
+        
+        // Sanitize JSON if needed
+        if (field === 'dna_json') {
+            result = result.replace(/```json/g, '').replace(/```/g, '').trim();
+        }
+
+        // Update Doc
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, currentSubmission.id);
+        await updateDoc(docRef, {
+            [field]: result
+        });
+
+        // Update local state immediately for better UX
+        setCurrentSubmission(prev => ({ ...prev, [field]: result }));
+        log(`Action ${field} completed.`);
+    } catch (e) {
+        log(`AI Action Error: ${e.message}`);
+        alert("AI Processing Failed");
+    } finally {
+        setLoading(false);
+    }
   };
 
-  const generateStrategy = async () => {
-    if (isGeneratingStrategy) return;
-    setIsGeneratingStrategy(true);
-    try {
-      const data = await callAI({
-        systemInstruction: { parts: [{ text: STRATEGY_SYSTEM_INSTRUCTION }] },
-        contents: [{ parts: [{ text: `Kunde: ${activeClientName}\nInput: ${transcript}` }] }]
-      });
-      const res = JSON.parse(cleanJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text));
-      setStrategyReport(String(res.report));
-    } catch (e) { setAppError(String(e.message)); }
-    finally { setIsGeneratingStrategy(false); }
-  };
-  
-  const generateHooks = async () => {
-    if (isGeneratingHooks) return;
-    setIsGeneratingHooks(true);
-    try {
-      const data = await callAI({
-        systemInstruction: { parts: [{ text: "Erstelle 5 Social Media Hooks basierend auf der DNA." }] },
-        contents: [{ parts: [{ text: JSON.stringify(outputJson) }] }],
-        generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" } } }
-      });
-      const raw = data.candidates[0].content.parts[0].text;
-      setSocialHooks(JSON.parse(cleanJsonResponse(raw)));
-    } catch (e) { setAppError(String(e.message)); }
-    finally { setIsGeneratingHooks(false); }
-  };
-
-  // --- RENDER ---
-  
-  if (appMode === 'select') return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] flex flex-col items-center justify-center p-6 text-[#2c233e]">
-      <div className="text-center mb-16 animate-in fade-in zoom-in duration-700">
-        <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-3">Designstudio <span className="text-[#e32338]">Fuchs</span></h1>
-        <p className="opacity-60 font-medium text-lg uppercase tracking-widest text-[12px]">Brand Intelligence System</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl w-full">
-        <button onClick={() => setAppMode('client')} className="group bg-white/70 backdrop-blur-md hover:bg-white p-16 rounded-[4rem] text-center shadow-xl transition-all duration-300">
-          <div className="w-24 h-24 rounded-full bg-[#e32338]/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><User className="w-10 h-10 text-[#e32338]" /></div>
-          <h2 className="text-3xl font-bold mb-3">Kunden-Portal</h2>
-          <p className="opacity-60 font-medium text-sm">Briefing & Daten übermitteln.</p>
-        </button>
-        <button onClick={() => setAppMode('login')} className="group bg-[#2c233e]/90 p-16 rounded-[4rem] text-center shadow-2xl transition-all duration-300 text-white">
-          <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-8 group-hover:scale-110 transition-transform"><Briefcase className="w-10 h-10 text-white" /></div>
-          <h2 className="text-3xl font-bold mb-3">Agentur-Dashboard</h2>
-          <p className="opacity-40 font-medium text-sm">Analyse & Strategie.</p>
-        </button>
-      </div>
-    </div>
-  );
-
-  if (appMode === 'login') return (
-    <div className="min-h-screen bg-[#2c233e] flex items-center justify-center p-6 text-white text-center">
-      <form onSubmit={(e) => { 
-        e.preventDefault(); 
-        if(pinInput === ADMIN_PIN) { setIsAdminLoggedIn(true); setAppMode('agency'); } 
-        else setLoginError(true); 
-      }} className="bg-white/10 p-12 rounded-[3rem] w-full max-w-md backdrop-blur-xl border border-white/10">
-        <h2 className="text-2xl font-bold mb-8 uppercase tracking-widest">Admin PIN</h2>
-        <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} placeholder="PIN" className="w-full bg-white/5 border border-white/20 rounded-2xl px-6 py-4 text-center text-3xl tracking-[1em] outline-none mb-4" />
-        {loginError && <p className="text-[#e32338] font-bold mb-4">PIN falsch!</p>}
-        <div className="flex gap-4"><button type="button" onClick={() => setAppMode('select')} className="flex-1 opacity-40 font-bold uppercase text-xs">Abbruch</button><button type="submit" className="flex-1 bg-[#e32338] py-4 rounded-2xl font-bold uppercase text-xs">Login</button></div>
-      </form>
-    </div>
-  );
-
-  if (appMode === 'client') return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans">
-      <header className="px-8 h-24 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md">
-        <div className="font-bold text-2xl">Designstudio<span className="text-[#e32338]">Fuchs</span></div>
-        <button onClick={() => setAppMode('select')} className="text-xs font-bold opacity-40 uppercase px-6 py-2 bg-white/40 rounded-full hover:bg-white transition-all">Abbrechen</button>
-      </header>
-      <main className="max-w-6xl mx-auto px-8 py-16 animate-in fade-in duration-700">
-        {clientSubmitted ? (
-          <div className="text-center py-20 bg-white/40 backdrop-blur-xl rounded-[4rem] shadow-2xl border border-white/60 animate-in fade-in">
-            <Check className="w-20 h-20 text-[#e32338] mx-auto mb-8" />
-            <h2 className="text-4xl font-bold mb-4">Erfolgreich!</h2>
-            <p className="text-xl opacity-60 mb-10">Deine Nachricht wurde sicher übermittelt.</p>
-            <button onClick={() => { setClientSubmitted(false); setAppMode('select'); }} className="px-12 py-4 bg-[#2c233e] text-white rounded-full font-bold">Zur Startseite</button>
-          </div>
-        ) : (
-          <>
-            <div className="text-center mb-16"><h1 className="text-5xl font-bold tracking-tight mb-4">Deine <span className="text-[#e32338]">Marke</span> schärfen.</h1></div>
-            {appError && <div className="max-w-xl mx-auto mb-8 bg-red-50 border border-red-200 text-red-600 px-6 py-4 rounded-2xl flex items-center gap-4 animate-in slide-in-from-top-2"><AlertCircle className="w-6 h-6" /><p className="text-sm font-bold">{String(appError)}</p></div>}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-              <div className="lg:col-span-5">
-                <div className="bg-white/40 backdrop-blur-md border border-white/60 rounded-[3rem] p-10 shadow-xl">
-                  <h3 className="text-[11px] font-bold uppercase tracking-widest mb-8 text-[#e32338] flex items-center gap-2"><Lightbulb className="w-5 h-5" /> Leitfragen</h3>
-                  <div className="space-y-6">
-                    {INTERVIEW_QUESTIONS.map(q => (
-                      <div key={q.id} className="border-l-4 border-[#2c233e]/5 pl-6"><p className="font-bold text-sm mb-1">{q.title}</p><p className="text-xs opacity-50">{q.text}</p></div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="lg:col-span-7 space-y-8">
-                <div className="bg-white/40 border border-white/60 rounded-[3rem] p-10 shadow-xl space-y-8">
-                  <div className="grid grid-cols-2 gap-4">
-                    <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Name *" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                    <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} placeholder="Firma" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none font-medium" />
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">Wie groß ist dein Team?</label>
-                    <div className="flex flex-wrap gap-2">{COMPANY_SIZES.map(s => <button key={s} onClick={() => setCompanySize(s)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all ${companySize === s ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/50 hover:bg-white/50'}`}>{s}</button>)}</div>
-                  </div>
-                  <div className="space-y-4">
-                    <label className="text-[10px] font-bold uppercase opacity-40 ml-2">In welchem Bereich bist du tätig?</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {CATEGORIES.map(c => <button key={c.id} onClick={() => setClientCategory(c.label)} className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-2 ${clientCategory === c.label ? 'bg-[#e32338] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/60 hover:bg-white/50'}`}><div className="flex items-center gap-2 font-bold text-xs"><c.Icon className="w-4 h-4" /> {c.label}</div></button>)}
-                      <button onClick={() => setClientCategory("Nicht sicher")} className={`p-4 rounded-2xl text-center border font-bold text-xs col-span-2 ${clientCategory === "Nicht sicher" ? 'bg-[#2c233e] text-white border-transparent' : 'bg-white/30 border-white/60 text-[#2c233e]/40'}`}>Ich bin mir nicht sicher</button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 border-t border-[#2c233e]/5 pt-4"><input type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /><input type="text" value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Instagram" className="bg-white/50 border border-white/60 rounded-2xl px-6 py-4 outline-none text-xs" /></div>
-                </div>
-                <div className="bg-white/50 border border-white/60 rounded-[3rem] overflow-hidden shadow-2xl relative">
-                  <div className="p-8 border-b border-white/40 flex justify-center items-center gap-6 bg-white/20">
-                    {!isRecording ? (
-                      <button onClick={startRecording} className="flex items-center gap-3 px-12 py-6 bg-[#e32338] text-white rounded-full font-bold uppercase text-[12px] tracking-widest shadow-lg hover:bg-[#c91d31] transition-all transform hover:scale-105 active:scale-95"><Mic className="w-6 h-6" /> Aufnahme starten</button>
-                    ) : (
-                      <div className="flex flex-col items-center gap-4 w-full">
-                        <div className="h-2 w-48 bg-white/30 rounded-full overflow-hidden"><div className="h-full bg-[#e32338] transition-all" style={{ width: `${Math.min(100, audioLevel * 2)}%` }} /></div>
-                        <div className="flex gap-4">
-                          <button onClick={togglePause} className={`flex items-center gap-3 px-8 py-5 text-white rounded-full font-bold uppercase text-[10px] shadow-lg transition-all ${isPaused ? 'bg-emerald-500' : 'bg-amber-500'}`}>{isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />} {isPaused ? "Weiter" : "Pause"}</button>
-                          <button onClick={stopRecording} className="flex items-center gap-3 px-8 py-5 bg-[#2c233e] text-white rounded-full font-bold uppercase text-[10px] shadow-lg"><Square className="w-4 h-4" /></button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  {isTranscribing && <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center p-10"><Loader2 className="w-10 h-10 text-[#e32338] animate-spin mb-4" /><p className="text-xs font-bold uppercase tracking-widest text-[#2c233e]">KI schreibt Nachricht...</p></div>}
-                  <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Deine Nachricht hier..." className="w-full bg-transparent p-12 text-xl font-medium min-h-[400px] outline-none resize-none leading-relaxed placeholder:text-[#2c233e]/20" />
-                  <div className="p-8 border-t border-white/40 flex justify-end bg-white/10">
-                    <button 
-                      onClick={handleClientSubmit} 
-                      // Button disabled, bis Auth bereit ist UND Input da ist
-                      disabled={isSending || !authReady || !transcript || !clientName} 
-                      className="bg-[#e32338] text-white px-12 py-5 rounded-full font-bold uppercase tracking-widest text-sm shadow-xl disabled:opacity-30 flex items-center gap-3 transform hover:translate-x-1 transition-all"
-                    >
-                      {isSending ? <Loader2 className="animate-spin" /> : <><Send className="w-4 h-4" /> Absenden</>}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </main>
-    </div>
-  );
-
-  // --- AGENCY DASHBOARD ---
+  // View Routing
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#edd5e5] via-[#dcd2e6] to-[#c4c0e6] text-[#2c233e] font-sans selection:bg-[#e32338]/20">
-      <header className="px-8 h-20 flex items-center justify-between border-b border-white/20 bg-white/10 backdrop-blur-md sticky top-0 z-20">
-        <span className="font-bold text-xl">Designstudio<span className="text-[#e32338]">Fuchs</span></span>
-        <div className="flex items-center gap-8">
-          <button onClick={copyMagicLink} className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#e32338] bg-white px-6 py-2 rounded-full shadow-sm hover:shadow-md transition-all">{linkCopied ? "Kopiert!" : "Kunden-Link"}</button>
-          <button onClick={() => { setIsAdminLoggedIn(false); setAppMode('select'); }} className="text-[11px] font-bold opacity-30 hover:opacity-100 flex items-center gap-2 transition-all"><Lock className="w-4 h-4" /> Logout</button>
-        </div>
-      </header>
-      <main className="max-w-7xl mx-auto px-8 py-12 animate-in fade-in duration-700">
-        {step === 1 && (
-          <div className="mb-20">
-            <h2 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2 opacity-60"><Inbox className="w-4 h-4" /> Posteingang ({submissions.length})</h2>
-            {activeClientName && <div className="mb-8 inline-flex items-center gap-3 bg-[#e32338] text-white px-8 py-4 rounded-full text-xs font-bold uppercase shadow-xl animate-in slide-in-from-left"><Sparkles className="w-4 h-4" /> Workspace: {String(activeClientName)} aktiv <button onClick={() => { setActiveClientName(null); setTranscript(""); setWebsiteUrl(""); setSocialUrl(""); setCompanySize(""); setSelectedCategory(null); }} className="ml-4 hover:rotate-90 transition-transform"><Trash2 className="w-4 h-4" /></button></div>}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {submissions.map(sub => (
-                <div key={sub.id} className={`bg-white/60 p-8 rounded-[2.5rem] shadow-lg border border-white/60 hover:shadow-xl transition-all relative ${activeClientName === sub.name ? 'border-[#e32338] ring-2 ring-[#e32338]/20' : ''}`}>
-                  <div className="flex justify-between mb-4"><span className="font-bold text-lg">{String(sub.name || "Gast")}</span><span className="text-[10px] bg-[#e32338]/10 text-[#e32338] px-2 py-1 rounded">{String(sub.category || "Unklar")}</span></div>
-                  <p className="text-sm italic opacity-60 line-clamp-3 mb-6 leading-relaxed">"{String(sub.text || "")}"</p>
-                  <button onClick={() => loadSubmission(sub)} className="w-full py-3 bg-[#2c233e] text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-black transition-all">Laden</button>
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30">
+        {/* Navigation Bar */}
+        <nav className="border-b border-slate-800 bg-slate-950/50 backdrop-blur-md sticky top-0 z-40">
+            <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+                <div 
+                    className="font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 cursor-pointer"
+                    onClick={() => { setView('client'); setSubmissionResult(null); }}
+                >
+                    FUCHS<span className="font-light text-indigo-400">.INTEL</span>
                 </div>
-              ))}
-            </div>
-            <div className="mt-16 pt-16 border-t border-[#2c233e]/5">
-              <h1 className="text-4xl font-bold mb-8">Analyse Basis</h1>
-              <div className="grid grid-cols-2 gap-6">{CATEGORIES.map(c => <button key={c.id} onClick={() => { setSelectedCategory(c); setStep(2); }} className={`p-8 rounded-[3rem] text-left transition-all ${selectedCategory?.id === c.id ? 'bg-[#2c233e] text-white' : 'bg-white/40 hover:bg-white'}`}><c.Icon className="w-8 h-8 mb-4" /><div className="font-bold text-xl">{c.label}</div></button>)}</div>
-            </div>
-          </div>
-        )}
-        {step === 2 && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 space-y-12">
-            <div className="flex justify-between items-end gap-8">
-              <div><button onClick={() => setStep(1)} className="flex items-center gap-2 text-xs font-bold opacity-50 mb-4 hover:opacity-100"><ChevronLeft className="w-4 h-4" /> Zurück</button><h2 className="text-4xl font-bold tracking-tight">Workspace.</h2></div>
-              <button onClick={handleDNAAnalyse} disabled={!transcript || isGenerating} className="px-10 py-4 bg-[#e32338] text-white rounded-full font-bold uppercase text-xs shadow-xl hover:scale-105 transition-all">Analyse Starten</button>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-8 bg-white/50 border border-white/60 rounded-[3rem] p-10 shadow-xl">
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                  <div className="relative"><Globe className="w-4 h-4 absolute left-4 top-4 opacity-30" /><input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="Website URL" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-xl pl-10 pr-4 py-3 outline-none" /></div>
-                  <div className="relative"><User className="w-4 h-4 absolute left-4 top-4 opacity-30" /><input value={socialUrl} onChange={e => setSocialUrl(e.target.value)} placeholder="Social Media" className="w-full bg-white/40 border border-[#2c233e]/5 rounded-xl pl-10 pr-4 py-3 outline-none" /></div>
+                <div className="flex gap-4">
+                    {view === 'client' && (
+                        <button onClick={() => setView('admin-login')} className="text-xs text-slate-500 hover:text-white transition-colors uppercase tracking-widest font-semibold">
+                            Partner Access
+                        </button>
+                    )}
+                    {(view === 'admin-dashboard' || view === 'admin-detail') && (
+                        <button onClick={() => setView('client')} className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
+                            <LogOut size={12} /> Exit
+                        </button>
+                    )}
                 </div>
-                <textarea value={transcript} onChange={e => setTranscript(e.target.value)} className="w-full h-[500px] bg-transparent resize-none outline-none text-lg leading-relaxed" placeholder="Input Daten..." />
-              </div>
-              <div className="lg:col-span-4 bg-white/30 border border-white/60 rounded-[3rem] p-10 h-fit shadow-sm">
-                <h3 className="text-[10px] font-bold uppercase opacity-50 mb-6">Client Meta Info</h3>
-                <div className="space-y-4 text-sm font-bold">
-                  <div className="flex justify-between pb-2 border-b border-[#2c233e]/5"><span>Name:</span><span>{String(activeClientName) || "Gast"}</span></div>
-                  <div className="flex justify-between pb-2 border-b border-[#2c233e]/5"><span>Größe:</span><span>{String(companySize) || "N.A."}</span></div>
-                  <div className="flex justify-between"><span>Bereich:</span><span>{selectedCategory?.label || "Unklar"}</span></div>
+            </div>
+        </nav>
+
+        {/* Main Content */}
+        <main className="p-6 pb-20">
+            {view === 'client' && (
+                <ClientPortal onSubmit={handleClientSubmit} loading={loading} result={submissionResult} />
+            )}
+
+            {view === 'admin-login' && (
+                <div className="flex items-center justify-center h-[60vh]">
+                    <form onSubmit={handleAdminLogin} className="w-full max-w-xs text-center">
+                        <Lock className="mx-auto mb-4 text-slate-600" size={32} />
+                        <h2 className="text-xl font-medium text-white mb-6">Security Check</h2>
+                        <input 
+                            type="password" 
+                            autoFocus
+                            placeholder="PIN Entry" 
+                            className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-center text-white focus:ring-2 focus:ring-indigo-500 outline-none tracking-[1em] text-lg mb-4"
+                            value={pin}
+                            onChange={(e) => setPin(e.target.value)}
+                        />
+                        <button type="submit" className="w-full bg-slate-800 hover:bg-slate-700 text-white py-3 rounded-xl transition-colors text-sm font-medium">
+                            Verify Identity
+                        </button>
+                    </form>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {step === 3 && <div className="h-[70vh] flex flex-col items-center justify-center text-center"><div className="relative mb-12"><div className="w-32 h-32 border-4 border-[#e32338]/10 border-t-[#e32338] rounded-full animate-spin"></div><Sparkles className="w-8 h-8 text-[#e32338] absolute inset-0 m-auto animate-pulse" /></div><h2 className="text-4xl font-bold mb-4">Analyse aktiv.</h2><p className="text-xl opacity-40">Intelligence Bot kalibriert Ergebnisse...</p></div>}
-        {step === 4 && outputJson && (
-          <div className="animate-in slide-in-from-bottom-8 duration-700 space-y-12">
-            <div className="flex justify-between items-center">
-              <h1 className="text-4xl font-bold">Analyse <span className="text-[#e32338]">Fertig.</span></h1>
-              <div className="flex gap-4"><button onClick={() => { setStep(1); setOutputJson(null); setStrategyReport(null); }} className="px-10 py-5 bg-white text-[#2c233e] rounded-full text-[11px] font-bold uppercase shadow-xl hover:text-[#e32338] transition-all">Posteingang</button><button onClick={() => copySimpleText(JSON.stringify(outputJson, null, 2), () => { setCopied(true); setTimeout(() => setCopied(false), 2000); })} className="px-10 py-5 bg-[#e32338] text-white rounded-full text-[11px] font-bold uppercase shadow-2xl flex items-center gap-3 hover:bg-[#c91d31] transition-all">{copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}{copied ? 'Kopiert!' : 'JSON für Base44'}</button></div>
-            </div>
-            {/* STRATEGIE REPORT CARD */}
-            <div className="bg-white/50 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8 mb-10"><div><h3 className="text-3xl font-bold mb-2 flex items-center gap-3"><FileText className="w-8 h-8 text-[#e32338]" /> Freystil Sales <span className="text-[#e32338]">Report.</span></h3><p className="text-lg opacity-60 font-medium max-w-xl">Strategische Sales Mail & Analyse nach dem Freystil-Framework.</p></div>{!strategyReport && <button onClick={handleStrategyAnalyse} disabled={isGeneratingStrategy} className="px-10 py-5 bg-white text-[#2c233e] border-2 border-[#e32338]/10 rounded-full font-bold uppercase text-[11px] tracking-widest shadow-lg flex items-center gap-3 hover:bg-[#e32338] hover:text-white transition-all">{isGeneratingStrategy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Report erstellen</button>}</div>
-              {strategyReport && <div className="bg-white rounded-[3rem] p-12 border border-white/60 relative group shadow-inner"><button onClick={() => copySimpleText(strategyReport)} className="absolute top-8 right-8 p-4 bg-white hover:bg-[#e32338] hover:text-white rounded-full transition-all shadow-md active:scale-95"><Copy className="w-5 h-5" /></button><div className="prose prose-lg text-[#2c233e] whitespace-pre-wrap font-medium leading-relaxed max-w-none">{String(strategyReport)}</div></div>}
-            </div>
-            {/* JSON BOX */}
-            <div className="bg-[#2c233e] border border-white/10 rounded-[4rem] p-10 shadow-2xl overflow-auto max-h-[800px]"><div className="flex justify-between items-center mb-6 pb-4 border-b border-white/10"><span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Base44 Schema Output</span><FileJson className="w-5 h-5 text-white/40" /></div><pre className="text-white/80 font-mono text-sm leading-relaxed"><code>{JSON.stringify(outputJson, null, 2)}</code></pre></div>
-            <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[4rem] p-12 shadow-2xl h-fit">
-                 <h3 className="text-3xl font-bold mb-10 flex items-center gap-3"><Sparkles className="w-6 h-6 text-[#e32338]" /> Content <span className="text-[#e32338]">Inkubator.</span></h3>
-                 {!socialHooks ? <button onClick={generateHooks} disabled={isGeneratingHooks} className="w-full py-8 bg-white text-[#2c233e] rounded-[2.5rem] font-bold uppercase text-[12px] shadow-xl hover:text-[#e32338] transition-all flex items-center justify-center gap-4">{isGeneratingHooks ? <Loader2 className="animate-spin w-6 h-6" /> : <Sparkles className="w-6 h-6" />} 5 Hooks generieren</button> : <div className="space-y-6">{socialHooks.map((h, i) => <div key={i} className="p-8 bg-white border border-white/40 rounded-[2.5rem] italic font-semibold relative group hover:bg-[#e32338]/5 transition-all shadow-sm transform hover:-translate-y-1">{String(h)}<button onClick={() => copySimpleText(h)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 p-2 text-[#e32338] hover:scale-110 transition-all"><Copy className="w-4 h-4" /></button></div>)}</div>}
-            </div>
-          </div>
-        )}
-      </main>
-      <style dangerouslySetInnerHTML={{ __html: `.custom-scrollbar::-webkit-scrollbar { width: 6px; } .custom-scrollbar::-webkit-scrollbar-track { background: transparent; } .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(227, 35, 56, 0.2); border-radius: 10px; }` }} />
+            )}
+
+            {view === 'admin-dashboard' && (
+                <AdminDashboard 
+                    submissions={submissions} 
+                    onViewDetail={(sub) => { setCurrentSubmission(sub); setView('admin-detail'); }} 
+                />
+            )}
+
+            {view === 'admin-detail' && currentSubmission && (
+                <AdminDetail 
+                    submission={currentSubmission} 
+                    onBack={() => setView('admin-dashboard')}
+                    onAction={handleAdminAction}
+                    actionLoading={loading}
+                />
+            )}
+        </main>
+
+        <DebugPanel user={user} dbStatus={dbStatus} logs={logs} />
+        
+        {/* Style injection for Custom Scrollbar & Animations */}
+        <style>{`
+          .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+          .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+          .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+          .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+          
+          @keyframes fade-in {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
+        `}</style>
     </div>
   );
 }
