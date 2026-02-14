@@ -1,70 +1,85 @@
 export default async function handler(req, res) {
-  // CORS Configuration
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle OPTIONS preflight
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+  // Healthcheck
+  if (req.method === 'GET') {
+    return res.status(200).json({ status: 'ok', service: 'Gemini Proxy' });
   }
 
-  // Enforce POST method
+  // Preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  // Main Logic
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Validate API Key
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.error('GEMINI_API_KEY is missing in environment variables');
-    return res.status(500).json({ error: 'Server Configuration Error' });
+    return res.status(500).json({ error: 'Server Config Error: Missing API Key' });
   }
 
   try {
-    // 1. Model Strategy Logic
-    // Extract 'model' from body to determine strategy, then separate it from the Google payload
-    const { model: requestedModel, ...googlePayload } = req.body;
+    const { model = 'gemini-1.5-flash', system = '', user, jsonOnly = false } = req.body || {};
 
-    // Default: Fast Model (Client-facing, Hooks, Transcription)
-    let targetModel = 'gemini-1.5-flash';
-
-    // Upgrade: Deep Analysis Model (Brand DNA, Sales Intel)
-    // Only switch if explicitly requested and valid
-    if (requestedModel === 'gemini-2.5-flash') {
-      targetModel = 'gemini-2.5-flash';
+    if (!user) {
+      return res.status(400).json({ error: 'Missing user prompt' });
     }
 
-    // 2. Target Google Generative Language API
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+    let finalSystemPrompt = system;
+    if (jsonOnly) {
+      finalSystemPrompt += " Output MUST be valid raw JSON only. No Markdown blocks, no explanations.";
+    }
 
-    const response = await fetch(url, {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    
+    const payload = {
+      contents: [{ parts: [{ text: user }] }],
+      systemInstruction: { parts: [{ text: finalSystemPrompt }] },
+      generationConfig: {
+        temperature: jsonOnly ? 0.2 : 0.7,
+      }
+    };
+
+    if (jsonOnly) {
+       payload.generationConfig.responseMimeType = "application/json";
+    }
+
+    const apiRes = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      // 3. Send payload WITHOUT the 'model' field (Google API rejects unknown fields)
-      body: JSON.stringify(googlePayload),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
 
-    const data = await response.json();
+    const data = await apiRes.json();
 
-    // Forward upstream errors
-    if (!response.ok) {
-      console.error(`Gemini API Error (${targetModel}):`, data);
-      return res.status(response.status).json(data);
+    if (!apiRes.ok) {
+      throw new Error(data.error?.message || 'Upstream API Error');
     }
 
-    // Return successful response
-    return res.status(200).json(data);
+    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // JSON Cleanup & Validation
+    if (jsonOnly && typeof text === 'string') {
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      try {
+        JSON.parse(text); 
+      } catch (e) {
+        console.error("JSON Parse Error:", text);
+        return res.status(500).json({ error: 'Model failed to generate valid JSON', raw: text });
+      }
+    }
+
+    return res.status(200).json({ result: text });
 
   } catch (error) {
-    console.error('Proxy Error:', error);
-    return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+    console.error('API Error:', error);
+    return res.status(500).json({ error: error.message });
   }
 }
