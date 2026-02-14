@@ -5,9 +5,15 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Healthcheck
+  // Healthcheck & Model Logging
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'ok', service: 'Gemini Proxy' });
+    const supportedModels = ['gemini-1.5-flash', 'gemini-1.5-pro'];
+    console.log('Gemini Proxy Ready. Supported Models:', supportedModels);
+    return res.status(200).json({ 
+      status: 'ok', 
+      service: 'Gemini Proxy', 
+      supported_models: supportedModels 
+    });
   }
 
   // Preflight
@@ -26,11 +32,24 @@ export default async function handler(req, res) {
   }
 
   try {
-    // UPDATED MODEL NAME DEFAULT
-    const { model = 'gemini-1.5-flash-latest', system = '', user, jsonOnly = false } = req.body || {};
+    const { model: requestedModel, system = '', user, jsonOnly = false } = req.body || {};
 
     if (!user) {
       return res.status(400).json({ error: 'Missing user prompt' });
+    }
+
+    // 🔧 FIX: Enforce Stable Model Names
+    // Map incoming requests (including legacy/latest tags) to stable 1.5 versions
+    let targetModel = 'gemini-1.5-flash'; // Default
+
+    if (requestedModel) {
+      if (requestedModel.includes('pro') || requestedModel.includes('2.')) {
+        // Use Pro for complex tasks or if 2.x was requested
+        targetModel = 'gemini-1.5-pro';
+      } else {
+        // Default fall-through for flash variants
+        targetModel = 'gemini-1.5-flash';
+      }
     }
 
     let finalSystemPrompt = system;
@@ -38,7 +57,7 @@ export default async function handler(req, res) {
       finalSystemPrompt += " Output MUST be valid raw JSON only. No Markdown blocks, no explanations.";
     }
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
     
     const payload = {
       contents: [{ parts: [{ text: user }] }],
@@ -77,7 +96,7 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({ result: text });
+    return res.status(200).json({ result: text, used_model: targetModel });
 
   } catch (error) {
     console.error('API Error:', error);
