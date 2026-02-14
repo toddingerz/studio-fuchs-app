@@ -149,7 +149,7 @@ export default function App() {
     setClientResult(null);
 
     try {
-      // Changed from gemini-1.5-flash to gemini-1.5-flash-latest
+      // UPDATED MODEL NAME
       const feedback = await callGeminiApi({
         model: 'gemini-1.5-flash-latest',
         userPrompt: PROMPTS.clientImmediate(formData),
@@ -178,7 +178,7 @@ export default function App() {
     setLoading(true);
 
     try {
-      // Changed from gemini-2.5-flash to gemini-2.0-flash
+      // UPDATED MODEL NAME
       const result = await callGeminiApi({
         model: 'gemini-2.0-flash',
         userPrompt: promptGen(currentSub),
