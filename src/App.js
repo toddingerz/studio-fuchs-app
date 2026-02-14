@@ -149,9 +149,9 @@ export default function App() {
     setClientResult(null);
 
     try {
-      // FIX: Verwendung der stabilen Version 001, da der generische Alias Probleme macht
+      // FIX: Wechsel auf das stabile Hauptmodell 'gemini-1.5-pro', um 404/Not Found Fehler zu umgehen.
       const feedback = await callGeminiApi({
-        model: 'gemini-1.5-flash-001',
+        model: 'gemini-1.5-pro',
         userPrompt: PROMPTS.clientImmediate(formData),
         jsonOnly: false
       });
@@ -178,9 +178,9 @@ export default function App() {
     setLoading(true);
 
     try {
-      // FIX: Verwendung der stabilen Version 001 für Pro
+      // FIX: Konsistente Nutzung von 'gemini-1.5-pro' für alle Aktionen.
       const result = await callGeminiApi({
-        model: 'gemini-1.5-pro-001',
+        model: 'gemini-1.5-pro',
         userPrompt: promptGen(currentSub),
         jsonOnly: isJson
       });
