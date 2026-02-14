@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Default changed from gemini-1.5-flash to gemini-1.5-flash-latest
+    // UPDATED MODEL NAME DEFAULT
     const { model = 'gemini-1.5-flash-latest', system = '', user, jsonOnly = false } = req.body || {};
 
     if (!user) {
