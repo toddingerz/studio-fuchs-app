@@ -149,9 +149,9 @@ export default function App() {
     setClientResult(null);
 
     try {
-      // UPDATED MODEL NAME
+      // FIX: Verwendung des stabilen Modells für kurze Antworten
       const feedback = await callGeminiApi({
-        model: 'gemini-1.5-flash-latest',
+        model: 'gemini-1.5-flash',
         userPrompt: PROMPTS.clientImmediate(formData),
         jsonOnly: false
       });
@@ -178,9 +178,9 @@ export default function App() {
     setLoading(true);
 
     try {
-      // UPDATED MODEL NAME
+      // FIX: Verwendung des Pro-Modells für tiefe Analysen (keine 2.x Modelle)
       const result = await callGeminiApi({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-1.5-pro',
         userPrompt: promptGen(currentSub),
         jsonOnly: isJson
       });
