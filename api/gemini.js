@@ -26,7 +26,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { model = 'gemini-1.5-flash', system = '', user, jsonOnly = false } = req.body || {};
+    // Default changed from gemini-1.5-flash to gemini-1.5-flash-latest
+    const { model = 'gemini-1.5-flash-latest', system = '', user, jsonOnly = false } = req.body || {};
 
     if (!user) {
       return res.status(400).json({ error: 'Missing user prompt' });
