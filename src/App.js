@@ -149,9 +149,9 @@ export default function App() {
     setClientResult(null);
 
     try {
-      // FIX: Verwendung des stabilen Modells für kurze Antworten
+      // FIX: Verwendung der stabilen Version 001, da der generische Alias Probleme macht
       const feedback = await callGeminiApi({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-1.5-flash-001',
         userPrompt: PROMPTS.clientImmediate(formData),
         jsonOnly: false
       });
@@ -178,9 +178,9 @@ export default function App() {
     setLoading(true);
 
     try {
-      // FIX: Verwendung des Pro-Modells für tiefe Analysen (keine 2.x Modelle)
+      // FIX: Verwendung der stabilen Version 001 für Pro
       const result = await callGeminiApi({
-        model: 'gemini-1.5-pro',
+        model: 'gemini-1.5-pro-001',
         userPrompt: promptGen(currentSub),
         jsonOnly: isJson
       });
