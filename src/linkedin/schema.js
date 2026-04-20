@@ -11,7 +11,7 @@ export const SHARED_SCHEMA = [
 
 export const SCHEMA = {
   // ─── V1T1 / V2T1 — Hero Team ───
-  V1T1: [
+  v1t1: [
     { key: 't1_headline_a', label: 'Headline A', type: 'text' },
     { key: 't1_headline_b', label: 'Headline B', type: 'text' },
     { key: 't1_sub', label: 'Subtext', type: 'textarea' },
@@ -28,7 +28,7 @@ export const SCHEMA = {
     { key: 't1_stat4_l', label: 'Stat 4 Label', type: 'text' },
     { key: 'img_hero', label: 'Bild: Porträt', type: 'image' },
   ],
-  V2T1: [
+  v2t1: [
     { key: 't1_headline_a', label: 'Headline A', type: 'text' },
     { key: 't1_headline_b', label: 'Headline B', type: 'text' },
     { key: 't1_sub', label: 'Subtext', type: 'textarea' },
@@ -47,7 +47,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1T2 / V2T2 — Team Ensemble ───
-  V1T2: [
+  v1t2: [
     { key: 't2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 't2_meta', label: 'Meta', type: 'text' },
     { key: 't2_headline_a', label: 'Headline A', type: 'text' },
@@ -64,7 +64,7 @@ export const SCHEMA = {
     { key: 'img_p5', label: 'Bild: Person 5', type: 'image' },
     { key: 'img_p6', label: 'Bild: Person 6', type: 'image' },
   ],
-  V2T2: [
+  v2t2: [
     { key: 't2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 't2_meta', label: 'Meta', type: 'text' },
     { key: 't2_headline_a', label: 'Headline A', type: 'text' },
@@ -83,7 +83,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1T3 / V2T3 — Interview ───
-  V1T3: [
+  v1t3: [
     { key: 't3_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 't3_question', label: 'Frage', type: 'textarea' },
     { key: 't3_answer', label: 'Antwort', type: 'textarea' },
@@ -93,7 +93,7 @@ export const SCHEMA = {
     { key: 't3_yearsLabel', label: 'Jahre Label', type: 'text' },
     { key: 'img_interview', label: 'Bild: Porträt', type: 'image' },
   ],
-  V2T3: [
+  v2t3: [
     { key: 't3_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 't3_question', label: 'Frage', type: 'textarea' },
     { key: 't3_answer', label: 'Antwort', type: 'textarea' },
@@ -105,7 +105,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1S1 / V2S1 — Fachbeitrag ───
-  V1S1: [
+  v1s1: [
     { key: 's1_meta', label: 'Meta', type: 'text' },
     { key: 's1_headline_a', label: 'Headline A', type: 'text' },
     { key: 's1_headline_b', label: 'Headline B', type: 'text' },
@@ -119,7 +119,7 @@ export const SCHEMA = {
     { key: 's1_step5', label: 'Schritt 5', type: 'text' },
     { key: 's1_footer', label: 'Footer', type: 'text' },
   ],
-  V2S1: [
+  v2s1: [
     { key: 's1_meta', label: 'Meta', type: 'text' },
     { key: 's1_headline_a', label: 'Headline A', type: 'text' },
     { key: 's1_headline_b', label: 'Headline B', type: 'text' },
@@ -135,7 +135,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1S2 / V2S2 — Countdown ───
-  V1S2: [
+  v1s2: [
     { key: 's2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 's2_headline_a', label: 'Headline A', type: 'text' },
     { key: 's2_headline_b', label: 'Headline B', type: 'text' },
@@ -147,7 +147,7 @@ export const SCHEMA = {
     { key: 's2_countdownL', label: 'Countdown Label', type: 'text' },
     { key: 's2_cta', label: 'CTA Text', type: 'textarea' },
   ],
-  V2S2: [
+  v2s2: [
     { key: 's2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 's2_headline_a', label: 'Headline A', type: 'text' },
     { key: 's2_headline_b', label: 'Headline B', type: 'text' },
@@ -161,14 +161,14 @@ export const SCHEMA = {
   ],
 
   // ─── V1S3 / V2S3 — Karussell Cover ───
-  V1S3: [
+  v1s3: [
     { key: 's3_meta', label: 'Meta', type: 'text' },
     { key: 's3_line1', label: 'Zeile 1', type: 'text' },
     { key: 's3_line2', label: 'Zeile 2', type: 'text' },
     { key: 's3_sub', label: 'Subtext', type: 'textarea' },
     { key: 'img_machine', label: 'Bild: Maschine', type: 'image' },
   ],
-  V2S3: [
+  v2s3: [
     { key: 's3_meta', label: 'Meta', type: 'text' },
     { key: 's3_line1', label: 'Zeile 1', type: 'text' },
     { key: 's3_line2', label: 'Zeile 2', type: 'text' },
@@ -177,7 +177,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1B1 / V2B1 — Kunden-Logos ───
-  V1B1: [
+  v1b1: [
     { key: 'b1_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 'b1_headline_a', label: 'Headline A', type: 'text' },
     { key: 'b1_headline_b', label: 'Headline B', type: 'text' },
@@ -200,7 +200,7 @@ export const SCHEMA = {
     { key: 'img_logo5', label: 'Logo 5', type: 'image' },
     { key: 'img_logo6', label: 'Logo 6', type: 'image' },
   ],
-  V2B1: [
+  v2b1: [
     { key: 'b1_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 'b1_headline_a', label: 'Headline A', type: 'text' },
     { key: 'b1_headline_b', label: 'Headline B', type: 'text' },
@@ -225,7 +225,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1B2 / V2B2 — Case Study ───
-  V1B2: [
+  v1b2: [
     { key: 'b2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 'b2_caseNr', label: 'Case Nr.', type: 'text' },
     { key: 'b2_title', label: 'Projekttitel', type: 'text' },
@@ -241,7 +241,7 @@ export const SCHEMA = {
     { key: 'b2_k4_l', label: 'KPI 4 Label', type: 'text' },
     { key: 'img_case', label: 'Bild: Projekt', type: 'image' },
   ],
-  V2B2: [
+  v2b2: [
     { key: 'b2_eyebrow', label: 'Eyebrow', type: 'text' },
     { key: 'b2_caseNr', label: 'Case Nr.', type: 'text' },
     { key: 'b2_title', label: 'Projekttitel', type: 'text' },
@@ -259,7 +259,7 @@ export const SCHEMA = {
   ],
 
   // ─── V1B3 / V2B3 — Testimonial ───
-  V1B3: [
+  v1b3: [
     { key: 'b3_quote', label: 'Zitat', type: 'textarea' },
     { key: 'b3_name', label: 'Name', type: 'text' },
     { key: 'b3_role', label: 'Rolle', type: 'text' },
@@ -275,7 +275,7 @@ export const SCHEMA = {
     { key: 'b3_row3_after', label: 'Vergleich 3 Nachher', type: 'text' },
     { key: 'img_testimonial', label: 'Bild: Kunde', type: 'image' },
   ],
-  V2B3: [
+  v2b3: [
     { key: 'b3_quote', label: 'Zitat', type: 'textarea' },
     { key: 'b3_name', label: 'Name', type: 'text' },
     { key: 'b3_role', label: 'Rolle', type: 'text' },
