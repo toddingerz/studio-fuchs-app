@@ -177,12 +177,14 @@ export default function TweaksPanel({ open, onClose, content, images, onContentC
         </div>
 
         {/* Template-specific fields */}
-        {templateSchema.map((group, gi) => (
-          <div key={gi} style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#004d71', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>{group.title}</div>
-            {group.fields.map(renderField)}
+        {templateSchema.length > 0 && (
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#004d71', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+              {tmpl?.label || 'Template'}
+            </div>
+            {templateSchema.filter(f => f.type !== 'image').map(renderField)}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
